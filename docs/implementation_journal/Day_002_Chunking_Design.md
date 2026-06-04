@@ -1,33 +1,55 @@
-# Day 001
+# Day 002 — Chunking Design
 
 ## Goal
 
-Complete ingestion module design.
+Design the chunking framework for the Enterprise Knowledge Intelligence Platform.
 
 ---
 
 ## Completed
 
-* LLD-001 Ingestion
-* ADR-001 Parser Framework
+* LLD-002 Chunking Module
+* ADR-002 Chunking Strategy
 
 ---
 
 ## Key Decisions
 
-* Strategy pattern selected
-* Local filesystem only for Phase 1
-* PDF, DOCX, Markdown supported
+* Recursive Chunking selected as Phase 1 implementation
+* Metadata propagation defined
+* Chunk contract defined
+* Future support for semantic chunking established
+
+---
+
+## Why This Matters
+
+Chunk quality directly influences:
+
+* Retrieval quality
+* Embedding quality
+* Generation quality
+
+Improving chunk quality is expected to improve overall platform performance.
 
 ---
 
 ## Risks
 
-* PDF parsing quality
-* Scanned PDFs not supported
+* Improper chunk sizing
+* Loss of semantic boundaries
+* Retrieval degradation
+
+---
+
+## Future Work
+
+* Implement Recursive Chunker
+* Evaluate chunk size impact
+* Introduce Semantic Chunking
 
 ---
 
 ## Next Step
 
-LLD-002 Chunking
+Design Embedding Pipeline (LLD-003)

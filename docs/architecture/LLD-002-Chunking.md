@@ -1,41 +1,31 @@
-# LLD-001 — Ingestion Module
+# LLD-002 — Chunking Module
 
 ## Objective
 
-The ingestion module is responsible for transforming enterprise documents into a standardized document contract that can be consumed by downstream systems such as chunking, embedding generation, indexing, and retrieval.
+The chunking module is responsible for transforming normalized documents into retrieval-ready chunks while preserving context, metadata, and document structure.
+
+The generated chunks will be consumed by the embedding pipeline and ultimately influence retrieval quality.
 
 ---
 
-## Scope
+# Scope
 
-Supported Formats (Phase 1)
+Phase 1
 
-* PDF
-* DOCX
-* Markdown
+* Recursive Chunking
 
-Future Formats
+Phase 2
 
-* HTML
-* PPTX
-* Confluence
-* SharePoint
+* Semantic Chunking
 
----
+Future
 
-## Inputs
-
-Files from:
-
-* Local Filesystem
-* S3
-* Google Drive
-
-Phase 1 supports Local Filesystem only.
+* Rule-Based Chunking
+* Adaptive Chunking
 
 ---
 
-## Outputs
+# Inputs
 
 Document Contract
 
@@ -45,125 +35,196 @@ Document
 
 ---
 
-## Responsibilities
+# Outputs
 
-### Parser Layer
+Chunk Contract
 
-Responsibilities:
+```python
+Chunk
+```
 
-* Read files
-* Extract textual content
-* Extract metadata
-* Preserve structure where possible
+---
 
-Not Responsible For:
+# Responsibilities
 
-* OCR
-* Chunking
-* Embedding Generation
+The chunking module is responsible for:
+
+* Splitting documents into manageable units
+* Preserving document context
+* Preserving metadata
+* Maintaining chunk order
+* Supporting future chunking strategies
+
+The chunking module is NOT responsible for:
+
+* Embedding generation
+* Retrieval
 * Classification
+* Indexing
 
 ---
 
-### Cleaner Layer
+# Chunk Contract
 
-Responsibilities:
+Attributes
 
-* Remove empty lines
-* Normalize whitespace
-* Normalize encoding
-
-Not Responsible For:
-
-* Semantic transformations
+* chunk_id
+* document_id
+* chunk_index
+* text
+* metadata
+* parent_section
 
 ---
 
-## High Level Flow
+# Metadata Propagation
 
-Document
+The following metadata must be propagated from the source document to every chunk:
 
-↓
+* document_id
+* document_type
+* source
+* owner
+* created_at
+* updated_at
 
-Parser
+Example
 
-↓
+```json
+{
+  "document_id": "123",
+  "document_type": "policy",
+  "source": "leave_policy.pdf"
+}
+```
 
-Raw Document
+---
 
-↓
+# Chunking Strategies
 
-Cleaner
+## Recursive Chunking
 
-↓
+Phase 1 implementation.
 
-Normalized Document
+Characteristics:
 
-↓
+* Simple
+* Deterministic
+* Easy to test
+* Good baseline
+
+---
+
+## Semantic Chunking
+
+Phase 2 implementation.
+
+Characteristics:
+
+* Context aware
+* Better retrieval quality
+* Higher computational cost
+
+---
+
+## Rule-Based Chunking
+
+Future implementation.
+
+Characteristics:
+
+* Uses headings
+* Uses section boundaries
+* Domain specific
+
+---
+
+# Configuration
+
+The following configuration parameters will be supported:
+
+* chunk_size
+* chunk_overlap
+* minimum_chunk_size
+
+Values will be finalized during implementation.
+
+---
+
+# Failure Handling
+
+## Empty Document
+
+Expected Behavior:
+
+* Skip chunk generation
+* Log warning
+
+---
+
+## Large Document
+
+Expected Behavior:
+
+* Chunk normally
+* Preserve ordering
+
+---
+
+## Single Paragraph Document
+
+Expected Behavior:
+
+* Generate single chunk
+
+---
+
+## Malformed Content
+
+Expected Behavior:
+
+* Return structured error
+
+---
+
+# Testing Strategy
+
+Test Cases
+
+### Small Document
+
+Validate chunk generation.
+
+### Medium Document
+
+Validate chunk ordering.
+
+### Large Document
+
+Validate chunk count and metadata propagation.
+
+### Malformed Document
+
+Validate error handling.
+
+---
+
+# Dependencies
+
+Input:
 
 Document Contract
 
-↓
+Output:
 
-Chunking Module
-
----
-
-## Error Handling
-
-### File Not Found
-
-Expected Behavior:
-
-* Log error
-* Return structured failure
+Embedding Pipeline
 
 ---
 
-### Corrupt File
+# Deliverables
 
-Expected Behavior:
-
-* Log error
-* Mark ingestion failure
-
----
-
-### Empty File
-
-Expected Behavior:
-
-* Skip indexing
-* Generate warning
-
----
-
-## Performance Targets
-
-Document Size:
-
-Up to 100 MB
-
-Expected Throughput:
-
-1000 documents per batch
-
----
-
-## Dependencies
-
-None
-
-This module is the first stage of the platform.
-
----
-
-## Deliverables
-
-* Base Parser Interface
-* PDF Parser
-* DOCX Parser
-* Markdown Parser
-* Cleaner
-* Document Contract
+* Chunk Contract
+* Recursive Chunker
+* Metadata Propagation
 * Unit Tests
+* Integration Tests
