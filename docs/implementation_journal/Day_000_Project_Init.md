@@ -4,6 +4,16 @@
 
 Enterprise Knowledge Intelligence Platform
 
+
+Reference Implementation:
+AI Governance & Risk Intelligence System
+
+Purpose:
+Validate version-aware retrieval, change detection,
+recommendation systems, and drift detection.
+
+The platform itself remains domain agnostic.
+
 ---
 
 ## Objective

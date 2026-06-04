@@ -4,6 +4,33 @@
 
 Enterprise Knowledge Intelligence Platform
 
+### Reference Implementation
+
+AI Governance & Risk Intelligence System
+
+### Reference Dataset
+
+* NIST AI Risk Management Framework (AI RMF 1.0)
+* NIST AI RMF Playbook
+* NIST GenAI Profile
+
+### Design Principles
+
+* Platform first, use case second
+* Domain agnostic architecture
+* Configuration driven behavior
+* Code Reuse Target >= 95%
+* Version-aware knowledge management
+
+### Future Supported Domains
+
+* AI Governance
+* AWS Documentation
+* Banking Regulations
+* Enterprise Policies
+* Healthcare Guidelines
+* Internal Knowledge Bases
+
 ---
 
 # PHASE 0 — PROJECT INITIALIZATION
@@ -23,6 +50,49 @@ Outcome
 
 ---
 
+# PHASE 0.5 — DOMAIN ABSTRACTION
+
+Goal
+
+Create a domain-agnostic platform architecture.
+
+Modules
+
+LLD-000 Domain Abstraction
+
+Artifacts
+
+* Knowledge Domain Abstraction
+* Domain Configuration Strategy
+* Metadata Strategy
+* Prompt Template Strategy
+
+Configuration
+
+configs/
+
+```
+domains/
+
+    ai_governance.yaml
+```
+
+ADR
+
+ADR-003 Domain Agnostic Platform Design
+
+ADR-004 Knowledge Domain Abstraction
+
+Outcome
+
+New domains can be onboarded with minimal code changes.
+
+Status
+
+IN PROGRESS
+
+---
+
 # PHASE 1 — FOUNDATION
 
 Goal
@@ -39,6 +109,7 @@ Artifacts
 * Parser Interfaces
 * PDF Parser
 * DOCX Parser
+* Markdown Parser
 
 Tests
 
@@ -53,7 +124,7 @@ ADR-001 Parser Framework Design
 
 Status
 
-NOT STARTED
+IN PROGRESS
 
 ---
 
@@ -84,7 +155,7 @@ ADR-002 Chunking Strategy
 
 Status
 
-NOT STARTED
+IN PROGRESS
 
 ---
 
@@ -107,10 +178,11 @@ Artifacts
 Experiments
 
 * BGE-small Baseline
+* Embedding Model Comparison
 
 ADR
 
-ADR-003 Embedding Model Selection
+ADR-005 Embedding Model Selection
 
 Status
 
@@ -136,7 +208,7 @@ Artifacts
 
 ADR
 
-ADR-004 OpenSearch Selection
+ADR-006 OpenSearch Selection
 
 Status
 
@@ -165,7 +237,35 @@ Experiments
 
 ADR
 
-ADR-005 Retrieval Strategy
+ADR-007 Retrieval Strategy
+
+Status
+
+NOT STARTED
+
+---
+
+# PHASE 5.5 — VERSION MANAGEMENT
+
+Goal
+
+Support evolving knowledge bases.
+
+Artifacts
+
+* Document Version Tracking
+* Change Detection
+* Incremental Re-indexing
+* Version Metadata
+
+Experiments
+
+* Retrieval Across Versions
+* Change Impact Analysis
+
+ADR
+
+ADR-008 Version Aware Knowledge Management
 
 Status
 
@@ -191,7 +291,7 @@ Artifacts
 
 ADR
 
-ADR-006 Prompting Strategy
+ADR-009 Prompting Strategy
 
 Status
 
@@ -213,10 +313,11 @@ Endpoints
 
 * POST /ingest
 * POST /ask
+* POST /compare-versions
 
 ADR
 
-ADR-007 API Design
+ADR-010 API Design
 
 Status
 
@@ -241,7 +342,7 @@ Experiments
 
 ADR
 
-ADR-008 Hybrid Retrieval
+ADR-011 Hybrid Retrieval
 
 Status
 
@@ -266,7 +367,7 @@ Experiments
 
 ADR
 
-ADR-009 Reranking Strategy
+ADR-012 Reranking Strategy
 
 Status
 
@@ -287,10 +388,11 @@ Artifacts
 * Precision@K
 * MRR
 * Faithfulness
+* Context Relevance
 
 ADR
 
-ADR-010 Evaluation Framework
+ADR-013 Evaluation Framework
 
 Status
 
@@ -312,7 +414,7 @@ Artifacts
 
 ADR
 
-ADR-011 Feedback Collection
+ADR-014 Feedback Collection
 
 Status
 
@@ -324,17 +426,18 @@ NOT STARTED
 
 Goal
 
-Recommend related content.
+Recommend related knowledge.
 
 Artifacts
 
 * Similar Documents
-* Related Policies
+* Related Knowledge Artifacts
+* Cross Referenced Sections
 * Recommendation Ranking
 
 ADR
 
-ADR-012 Recommendation Strategy
+ADR-015 Recommendation Strategy
 
 Status
 
@@ -356,7 +459,7 @@ Artifacts
 
 ADR
 
-ADR-013 Observability Design
+ADR-016 Observability Design
 
 Status
 
@@ -368,17 +471,18 @@ NOT STARTED
 
 Goal
 
-Detect retrieval degradation.
+Detect retrieval degradation and knowledge evolution.
 
 Artifacts
 
 * Embedding Drift
 * Query Drift
 * Quality Drift
+* Knowledge Drift
 
 ADR
 
-ADR-014 Drift Detection
+ADR-017 Drift Detection
 
 Status
 
@@ -401,7 +505,7 @@ Artifacts
 
 ADR
 
-ADR-015 Experimentation Framework
+ADR-018 Experimentation Framework
 
 Status
 
@@ -423,7 +527,39 @@ Artifacts
 
 ADR
 
-ADR-016 Deployment Strategy
+ADR-019 Deployment Strategy
+
+Status
+
+NOT STARTED
+
+---
+
+# PHASE 17 — DOMAIN ONBOARDING
+
+Goal
+
+Demonstrate platform extensibility.
+
+Artifacts
+
+* AI Governance Domain
+* AWS Documentation Domain
+* Banking Regulations Domain
+
+Deliverables
+
+* Domain Configuration Templates
+* Metadata Mapping Templates
+* Evaluation Dataset Templates
+
+Success Criteria
+
+A new domain can be onboarded without modifying core platform code.
+
+ADR
+
+ADR-020 Domain Onboarding Framework
 
 Status
 
