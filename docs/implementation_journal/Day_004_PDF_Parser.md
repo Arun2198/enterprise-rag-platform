@@ -1,25 +1,9 @@
-# Day 004 — PDF Parser
+Reference Dataset
 
-## Goal
+NIST AI Risk Management Framework
 
-Implement first production parser.
+Purpose
 
----
+Validate ingestion and retrieval workflows.
 
-## Scope
-
-- PDF Parsing
-- Error Handling
-- Unit Testing
-
----
-
-## Dependencies
-
-- pypdf
-
----
-
-## Expected Outcome
-
-PDF -> Document Contract
+The parser remains domain agnostic.
