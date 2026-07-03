@@ -15,7 +15,7 @@ def test_build_rag_service_defaults_to_local_runtime():
 
 def test_build_rag_service_rejects_unwired_provider():
 
-    settings = Settings(vector_store_provider="opensearch")
+    settings = Settings(vector_store_provider="unknown")
 
     with pytest.raises(ServiceConfigurationError):
         build_rag_service(settings)

@@ -25,13 +25,17 @@ if FastAPI is not None:
 
     @app.post("/ingest", response_model=IngestResponse)
     def ingest(request: IngestRequest) -> IngestResponse:
-        return rag_service.ingest(request.file_paths)
+        return rag_service.ingest(
+            file_paths=request.file_paths,
+            metadata=request.metadata
+        )
 
     @app.post("/ask", response_model=AskResponse)
     def ask(request: AskRequest) -> AskResponse:
         return rag_service.ask(
             query=request.query,
-            top_k=request.top_k
+            top_k=request.top_k,
+            metadata_filter=request.metadata_filter
         )
 else:
     app = None

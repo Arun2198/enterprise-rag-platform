@@ -15,10 +15,25 @@ class OpenSearchVectorStore:
     def __init__(
         self,
         client: Any,
-        index_name: str
+        index_name: str,
+        embedding_dimension: int = 384,
+        auto_create_index: bool = True
     ) -> None:
         self.client = client
         self.index_name = index_name
+        self.embedding_dimension = embedding_dimension
+
+        if auto_create_index:
+            self.ensure_index()
+
+    def ensure_index(self) -> None:
+        if self.client.indices.exists(index=self.index_name):
+            return
+
+        self.client.indices.create(
+            index=self.index_name,
+            body=self._index_body()
+        )
 
     def add(
         self,
@@ -28,7 +43,8 @@ class OpenSearchVectorStore:
         self.client.index(
             index=self.index_name,
             id=chunk.chunk_id,
-            body=self._document_body(chunk, embedding)
+            body=self._document_body(chunk, embedding),
+            refresh=False
         )
 
     def add_many(
@@ -85,6 +101,40 @@ class OpenSearchVectorStore:
             "embedding": embedding,
         }
 
+    def _index_body(self) -> dict[str, Any]:
+        return {
+            "settings": {
+                "index": {
+                    "knn": True
+                }
+            },
+            "mappings": {
+                "properties": {
+                    "chunk_id": {"type": "keyword"},
+                    "document_id": {"type": "keyword"},
+                    "chunk_index": {"type": "integer"},
+                    "text": {"type": "text"},
+                    "source": {"type": "keyword"},
+                    "document_type": {"type": "keyword"},
+                    "owner": {"type": "keyword"},
+                    "parent_section": {"type": "keyword"},
+                    "metadata": {
+                        "type": "object",
+                        "dynamic": True
+                    },
+                    "embedding": {
+                        "type": "knn_vector",
+                        "dimension": self.embedding_dimension,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "lucene"
+                        }
+                    }
+                }
+            }
+        }
+
     def _search_body(
         self,
         query_embedding: list[float],
@@ -96,21 +146,19 @@ class OpenSearchVectorStore:
         for key, value in (metadata_filter or {}).items():
             filters.append({"term": {f"metadata.{key}": value}})
 
-        knn_query: dict[str, Any] = {
-            "field": "embedding",
-            "query_vector": query_embedding,
+        vector_query: dict[str, Any] = {
+            "vector": query_embedding,
             "k": top_k,
-            "num_candidates": max(top_k * 10, 100),
         }
 
         if filters:
-            knn_query["filter"] = {"bool": {"filter": filters}}
+            vector_query["filter"] = {"bool": {"filter": filters}}
 
         return {
             "size": top_k,
             "query": {
                 "knn": {
-                    "embedding": knn_query
+                    "embedding": vector_query
                 }
             }
         }

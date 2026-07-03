@@ -25,11 +25,18 @@ def test_ingest_and_ask_endpoints(tmp_path):
 
     ingest_response = client.post(
         "/ingest",
-        json={"file_paths": [str(file_path)]}
+        json={
+            "file_paths": [str(file_path)],
+            "metadata": {"department": "hr"}
+        }
     )
     ask_response = client.post(
         "/ask",
-        json={"query": "How many leave days do contractors receive?", "top_k": 3}
+        json={
+            "query": "How many leave days do contractors receive?",
+            "top_k": 3,
+            "metadata_filter": {"department": "hr"}
+        }
     )
 
     assert ingest_response.status_code == 200

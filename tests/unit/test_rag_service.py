@@ -27,3 +27,25 @@ def test_rag_service_ingests_and_answers_from_markdown(tmp_path):
     assert ingest_response.errors == []
     assert "Contractors receive 10 days of leave." in ask_response.answer
     assert ask_response.sources
+
+
+def test_rag_service_filters_by_metadata(tmp_path):
+
+    hr_file = tmp_path / "hr_policy.md"
+    finance_file = tmp_path / "finance_policy.md"
+    hr_file.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
+    finance_file.write_text("Invoices are paid within 30 days.", encoding="utf-8")
+    service = RAGService()
+
+    service.ingest([str(hr_file)], metadata={"department": "hr"})
+    service.ingest([str(finance_file)], metadata={"department": "finance"})
+    response = service.ask(
+        query="How many leave days do contractors receive?",
+        metadata_filter={"department": "hr"}
+    )
+
+    assert response.sources
+    assert all(
+        "hr_policy" in source.document_id
+        for source in response.sources
+    )

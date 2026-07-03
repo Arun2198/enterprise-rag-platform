@@ -34,11 +34,13 @@ class RAGService:
 
     def ingest(
         self,
-        file_paths: list[str]
+        file_paths: list[str],
+        metadata: dict[str, str] | None = None
     ) -> IngestResponse:
         indexed_documents = 0
         indexed_chunks = 0
         errors = []
+        metadata = metadata or {}
 
         for file_path in file_paths:
             document_result = self.ingestion_pipeline.ingest_file(file_path)
@@ -47,7 +49,16 @@ class RAGService:
                 errors.append(self._format_error(file_path, document_result.error))
                 continue
 
-            chunk_result = self.chunker.chunk(document_result.data)
+            document = document_result.data.model_copy(
+                update={
+                    "metadata": {
+                        **document_result.data.metadata,
+                        **metadata
+                    }
+                }
+            )
+
+            chunk_result = self.chunker.chunk(document)
 
             if not chunk_result.success or chunk_result.data is None:
                 errors.append(self._format_error(file_path, chunk_result.error))
@@ -70,11 +81,13 @@ class RAGService:
     def ask(
         self,
         query: str,
-        top_k: int = 5
+        top_k: int = 5,
+        metadata_filter: dict[str, str] | None = None
     ) -> AskResponse:
         retrieved = self.retriever.retrieve(
             query=query,
-            top_k=top_k
+            top_k=top_k,
+            metadata_filter=metadata_filter
         )
         answer = self.answerer.answer(
             query=query,
