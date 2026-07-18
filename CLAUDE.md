@@ -62,8 +62,7 @@ providers means passing a different instance into `RAGService.__init__`.
 3. **Embedding** (`src/rag/embeddings/`) — `Embedder` protocol. Default is `HashingEmbedder`, a
    deterministic hash-based bag-of-tokens embedding (no external model/credentials needed, keeps
    the MVP runnable offline). `SentenceTransformerEmbedder` is a real local-model alternative
-   (BAAI/bge-small-en-v1.5) — note `sentence-transformers` is not in `pyproject.toml` dependencies
-   yet.
+   (BAAI/bge-small-en-v1.5), not wired into `service_factory`.
 4. **Vector store** (`src/rag/vector_store/`) — `VectorStore` protocol. `InMemoryVectorStore` does
    brute-force cosine similarity over an in-process dict, used for local/dev/tests.
    `OpenSearchVectorStore` is the production adapter; it takes an already-authenticated OpenSearch
@@ -72,7 +71,19 @@ providers means passing a different instance into `RAGService.__init__`.
 5. **Retrieval** (`src/rag/retrieval/hybrid_retrieval.py`) — `HybridRetriever` fuses vector cosine
    similarity with a keyword-overlap score (`vector_weight=0.65` / `keyword_weight=0.35`) over an
    over-fetched candidate set (`top_k * 4`), then truncates to `top_k`.
-6. **Generation** (`src/rag/generation/`) — `Answerer` protocol. `ExtractiveAnswerer` picks the
+6. **Reranking** (`src/rag/retrieval/reranker.py`) — `CrossEncoderReranker`, on by default
+   (`RERANKER_ENABLED=true`). `RAGService._retrieve()` over-fetches
+   `top_k * RERANKER_CANDIDATE_MULTIPLIER` (default multiplier 4) from `HybridRetriever`, then the
+   reranker jointly scores each `(query, chunk_text)` pair with a cross-encoder
+   (`cross-encoder/ms-marco-MiniLM-L-6-v2` by default) and keeps only the best `top_k` — this
+   catches negation/comparisons/word-order that independent bi-encoder retrieval scoring misses.
+   The cross-encoder score becomes the `RetrievedChunk.score` used downstream for confidence and
+   is also stashed in `chunk.metadata["cross_encoder_score"]`. When `RAGService` is constructed
+   with `reranker=None` (its own default — only `service_factory` turns reranking on), `_retrieve`
+   falls straight back to a plain `HybridRetriever.retrieve(top_k)` call, unchanged from before
+   this stage existed. `tests/unit/conftest.py` patches the underlying `sentence_transformers
+   .CrossEncoder` for the whole test session so no unit test ever downloads the real model.
+7. **Generation** (`src/rag/generation/`) — `Answerer` protocol. `ExtractiveAnswerer` picks the
    best-overlap sentence from retrieved chunks (no LLM call, fully deterministic — grounded by
    construction since it only ever returns retrieved text). `BedrockAnswerer` and
    `OpenAICompatibleAnswerer` are LLM-backed adapters that share one grounded prompt template
@@ -87,13 +98,17 @@ providers means passing a different instance into `RAGService.__init__`.
    exhausted/non-retryable failures instead of raising.
 
 **Wiring:** `app/service_factory.py::build_rag_service()` reads `app/config.py::Settings` (from
-env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, `LLM_*`, etc.).
-`GENERATION_PROVIDER` accepts `extractive` (default) or `openai_compatible` (requires
-`LLM_BASE_URL` + `LLM_API_KEY`, raises `ServiceConfigurationError` if either is missing); any
-other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` and `EMBEDDING_PROVIDER`
-only permit their local/default values (`memory`, `hashing`) — the production adapters
-(`OpenSearchVectorStore`, `BedrockAnswerer`) must be constructed and injected by the caller
-directly, since those need externally-managed authenticated clients the factory doesn't build.
+env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, `LLM_*`,
+`RERANKER_*`, etc.). `GENERATION_PROVIDER` accepts `extractive` (default) or `openai_compatible`
+(requires `LLM_BASE_URL` + `LLM_API_KEY`, raises `ServiceConfigurationError` if either is
+missing); any other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` and
+`EMBEDDING_PROVIDER` only permit their local/default values (`memory`, `hashing`) — the
+production adapters (`OpenSearchVectorStore`, `BedrockAnswerer`) must be constructed and injected
+by the caller directly, since those need externally-managed authenticated clients the factory
+doesn't build. `RERANKER_ENABLED` (default `true`), `RERANKER_MODEL_NAME`, and
+`RERANKER_CANDIDATE_MULTIPLIER` control the reranking stage independently of which generation
+provider is active — set `RERANKER_ENABLED=false` to bypass it entirely and get the pre-reranking
+`HybridRetriever` behavior back.
 
 **Evaluation** (`src/evaluation/metrics.py`) is a standalone module of retrieval metrics
 (`recall_at_k`, `precision_at_k`, `mean_reciprocal_rank`) — not wired into the service, used for

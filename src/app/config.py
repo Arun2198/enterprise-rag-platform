@@ -2,6 +2,10 @@ import os
 from dataclasses import dataclass
 
 
+def _parse_bool(value: str) -> bool:
+    return value.strip().lower() not in ("false", "0", "no", "")
+
+
 @dataclass(frozen=True)
 class Settings:
     vector_store_provider: str = "memory"
@@ -17,6 +21,9 @@ class Settings:
     llm_timeout_seconds: float = 30.0
     llm_max_tokens: int = 1000
     llm_temperature: float = 0.0
+    reranker_enabled: bool = True
+    reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_candidate_multiplier: int = 4
 
 
 def load_settings() -> Settings:
@@ -37,4 +44,12 @@ def load_settings() -> Settings:
         llm_timeout_seconds=float(os.getenv("LLM_TIMEOUT_SECONDS", "30")),
         llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1000")),
         llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
+        reranker_enabled=_parse_bool(os.getenv("RERANKER_ENABLED", "true")),
+        reranker_model_name=os.getenv(
+            "RERANKER_MODEL_NAME",
+            "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        ),
+        reranker_candidate_multiplier=int(
+            os.getenv("RERANKER_CANDIDATE_MULTIPLIER", "4")
+        ),
     )

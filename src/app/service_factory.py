@@ -2,6 +2,7 @@ from app.config import Settings
 from app.config import load_settings
 from app.services.rag_service import RAGService
 from rag.generation.openai_compatible_answerer import OpenAICompatibleAnswerer
+from rag.retrieval.reranker import CrossEncoderReranker
 
 WIRED_GENERATION_PROVIDERS = ("extractive", "openai_compatible")
 
@@ -34,6 +35,8 @@ def build_rag_service(
             "with a bedrock-runtime client."
         )
 
+    answerer = None
+
     if settings.generation_provider == "openai_compatible":
         if not settings.llm_base_url or not settings.llm_api_key:
             raise ServiceConfigurationError(
@@ -41,15 +44,22 @@ def build_rag_service(
                 "and LLM_API_KEY to be set."
             )
 
-        return RAGService(
-            answerer=OpenAICompatibleAnswerer(
-                api_key=settings.llm_api_key,
-                base_url=settings.llm_base_url,
-                model_name=settings.llm_model_name,
-                timeout=settings.llm_timeout_seconds,
-                max_tokens=settings.llm_max_tokens,
-                temperature=settings.llm_temperature
-            )
+        answerer = OpenAICompatibleAnswerer(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            model_name=settings.llm_model_name,
+            timeout=settings.llm_timeout_seconds,
+            max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature
         )
 
-    return RAGService()
+    reranker = None
+
+    if settings.reranker_enabled:
+        reranker = CrossEncoderReranker(model_name=settings.reranker_model_name)
+
+    return RAGService(
+        answerer=answerer,
+        reranker=reranker,
+        candidate_multiplier=settings.reranker_candidate_multiplier
+    )

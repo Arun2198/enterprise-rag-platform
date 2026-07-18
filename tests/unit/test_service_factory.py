@@ -52,3 +52,30 @@ def test_build_rag_service_requires_llm_credentials_for_openai_compatible():
 
     with pytest.raises(ServiceConfigurationError):
         build_rag_service(settings)
+
+
+def test_build_rag_service_disables_reranking_when_reranker_disabled():
+
+    settings = Settings(reranker_enabled=False)
+
+    service = build_rag_service(settings)
+
+    assert service.reranker is None
+
+
+@patch("app.service_factory.CrossEncoderReranker")
+def test_build_rag_service_wires_reranker_when_enabled(mock_reranker_class):
+
+    settings = Settings(
+        reranker_enabled=True,
+        reranker_model_name="cross-encoder/custom-model",
+        reranker_candidate_multiplier=6
+    )
+
+    service = build_rag_service(settings)
+
+    assert service.reranker is mock_reranker_class.return_value
+    assert service.candidate_multiplier == 6
+    mock_reranker_class.assert_called_once_with(
+        model_name="cross-encoder/custom-model"
+    )
