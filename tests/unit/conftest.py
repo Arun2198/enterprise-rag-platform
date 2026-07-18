@@ -1,5 +1,18 @@
 from unittest.mock import patch
 
+from opentelemetry import metrics
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+# OTel only allows a MeterProvider to be set once per process, so every
+# telemetry test in the suite (guardrails, mlops, ...) shares this one
+# reader instead of each trying to set its own - see
+# test_guardrails_telemetry.py / test_mlops_telemetry.py for the
+# delta-based assertion pattern this requires (metric streams persist
+# and accumulate for the rest of the session once any test emits one).
+TELEMETRY_READER = InMemoryMetricReader()
+metrics.set_meter_provider(MeterProvider(metric_readers=[TELEMETRY_READER]))
+
 
 class _FakeCrossEncoder:
     """

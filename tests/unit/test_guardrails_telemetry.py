@@ -1,7 +1,4 @@
 import pytest
-from opentelemetry import metrics
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from rag.guardrails.base import Action
 from rag.guardrails.base import GuardrailFinding
@@ -10,16 +7,18 @@ from rag.guardrails.base import Severity
 from rag.guardrails.telemetry import record_action
 from rag.guardrails.telemetry import record_finding
 
-# OTel only allows a MeterProvider to be set once per process, so this is
-# a module-scoped fixture and tests assert on deltas rather than absolute
-# values or "metric X is absent" (once any test in this module emits a
-# metric stream, its name persists for the rest of the module).
-_READER = InMemoryMetricReader()
-metrics.set_meter_provider(MeterProvider(metric_readers=[_READER]))
+from conftest import TELEMETRY_READER
+
+# OTel only allows a MeterProvider to be set once per process, so this
+# module shares conftest.TELEMETRY_READER with every other telemetry
+# test file rather than setting up its own; tests assert on deltas
+# rather than absolute values or "metric X is absent" (once any test in
+# the whole suite emits a metric stream, its name persists for the rest
+# of the session).
 
 
 def _metric_points(metric_name):
-    data = _READER.get_metrics_data()
+    data = TELEMETRY_READER.get_metrics_data()
 
     if data is None:
         return []

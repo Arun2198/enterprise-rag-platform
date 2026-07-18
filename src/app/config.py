@@ -42,6 +42,12 @@ class Settings:
     evaluation_enabled: bool = True
     evaluation_default_k: int = 5
     evaluation_report_dir: str = "evaluation/reports"
+    mlops_enabled: bool = True
+    model_registry_enabled: bool = True
+    feature_flags_enabled: bool = True
+    secrets_enabled: bool = True
+    drift_monitoring_enabled: bool = True
+    scheduler_enabled: bool = True
 
 
 def load_settings() -> Settings:
@@ -100,4 +106,10 @@ def load_settings() -> Settings:
         evaluation_enabled=_parse_bool(os.getenv("EVALUATION_ENABLED", "true")),
         evaluation_default_k=int(os.getenv("EVALUATION_DEFAULT_K", "5")),
         evaluation_report_dir=os.getenv("EVALUATION_REPORT_DIR", "evaluation/reports"),
+        mlops_enabled=_parse_bool(os.getenv("MLOPS_ENABLED", "true")),
+        model_registry_enabled=_parse_bool(os.getenv("MODEL_REGISTRY_ENABLED", "true")),
+        feature_flags_enabled=_parse_bool(os.getenv("FEATURE_FLAGS_ENABLED", "true")),
+        secrets_enabled=_parse_bool(os.getenv("SECRETS_ENABLED", "true")),
+        drift_monitoring_enabled=_parse_bool(os.getenv("DRIFT_MONITORING_ENABLED", "true")),
+        scheduler_enabled=_parse_bool(os.getenv("SCHEDULER_ENABLED", "true")),
     )

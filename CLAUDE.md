@@ -274,6 +274,111 @@ already measures directly), and `ExperimentTracker` (Layer 4: persisting/compari
 above) as `Protocol`s. None are implemented; a concrete implementation just needs to satisfy the
 Protocol shape and register itself - the runner, report format, and CLI don't change.
 
+## Operations & MLOps platform (`src/mlops/`)
+
+Standalone from the app - a provider-agnostic operational backbone (asset registries, lifecycle,
+config, feature flags, secrets, scheduling, governance, backup/recovery, RBAC), not wired into
+`RAGService`/`service_factory`. Nothing here sits in the request path; it's for managing the
+platform's own assets and operations. Every stateful component is in-memory by default and has
+no persistence unless explicitly backed up (`BackupManager`) - this is a library, not a service
+with its own database.
+
+**Architecture** — `manager.PlatformManager` is a thin facade composing the components below;
+each is equally usable standalone (`from mlops.registry import ModelRegistry` works with zero
+platform-manager ceremony). `PlatformManager` exists for cross-component workflows - `promote()`
+does a `LifecycleManager` transition *and* mirrors it into `GovernanceLog` in one call - and for
+`register_provider(name, obj)`/`get_provider(name)`, a single named slot any pluggable backend
+(a real MLflow registry, a cloud secrets client, a CI pipeline, a drift detector) registers into.
+
+**Registries** — `registry.ModelRegistry` tracks versioned AI assets (embedding models,
+rerankers, LLM providers, prompt templates, guardrail models, evaluation models) keyed
+`"{asset_type}:{name}:{version}"`, each carrying a `LifecycleStage` status and free-form
+metadata. `artifacts.ArtifactRegistry` is separate and **immutable, append-only** - prompt
+templates, chunking/embedding configs, eval datasets, experiment definitions, policies,
+guardrail configs, feature definitions - `save()` never overwrites, it always creates version
+`N+1`; nothing already saved is ever mutated. `ModelRegistryBackend` (in `registry.py`) is the
+unimplemented extension point a real MLflow/Azure ML/SageMaker/Vertex AI/Kubeflow registry would
+satisfy.
+
+**Lifecycle** — `lifecycle.LifecycleManager` is the promotion state machine: `Development ->
+Validation -> Staging -> Production -> Retired`, plus the reject-back edges (`Validation ->
+Development`, `Staging -> Validation`) - the full legal-transition table is
+`ALLOWED_TRANSITIONS`. Promoting into `Staging` or `Production` requires `approved_by`
+(raises `ApprovalRequiredError` otherwise); every transition and approval is recorded and
+queryable via `.history(asset_id)`/`.approvals(asset_id)`.
+
+**Configuration** — `configuration.ConfigurationManager` holds named environment profiles
+(dev/staging/prod/...), each independently versioned and append-only like `ArtifactRegistry`.
+`activate(name, version=None)` picks a profile version to read from; `get(key)` checks runtime
+overrides first, then the active profile's values, then a caller-supplied default; `rollback()`
+re-activates the previous version of whichever profile is (or was) active. Optional per-key
+`validators` reject an entire `save_profile()` call if any value fails its validator - nothing
+partially-invalid ever enters history.
+
+**Feature flags** — `feature_flags.FeatureFlagManager`: boolean enable/disable, percentage-based
+canary rollout, and a `shadow` marker (the flag just tracks shadow state - what "shadow mode"
+does is entirely up to the caller's own code). `is_enabled_for(name, subject_id)` uses stable
+SHA-256 hash bucketing so the same subject always gets the same answer for a given
+flag+percentage, instead of flapping between requests.
+
+**Secrets** — `secrets.SecretsProvider` Protocol + `LocalEnvSecretsProvider` (reads
+`os.environ`, optionally namespaced by a `prefix`) as the only implemented backend; Azure Key
+Vault/AWS Secrets Manager/GCP Secret Manager are extension points, not implemented (no cloud SDKs
+are project dependencies). `secrets.SecretValue` wraps every returned secret so `repr()`/`str()`
+always print `***redacted***` - call `.reveal()` explicitly to get the raw string, which should
+be the only place a secret value ever touches application code.
+
+**CI/CD** — `deployment.DeploymentPipeline` Protocol (`run_tests`/`run_evaluation`/
+`run_experiment`/`deploy`, each returning a `StageResult`). `LocalDeploymentPipeline` is a real,
+working reference implementation - `run_tests()`/`run_evaluation()` genuinely shell out to
+`pytest`/`evaluation/run_eval.py` via `subprocess`, proving the Protocol is actually usable, not
+just a paper interface; `deploy()` only logs intent (actually deploying is inherently
+provider-specific). GitHub Actions/Azure DevOps/Jenkins/GitLab CI adapters are **not
+implemented** - a real one would call that provider's REST API/CLI per stage but implement this
+exact same Protocol.
+
+**Scheduler** — `scheduler.Scheduler` is a real job registry with interval-based due-job
+execution, deliberately with **no background thread of its own** - call `run_due_jobs(now)`
+periodically from whatever actually owns scheduling in a deployment (a loop, a Kubernetes
+CronJob, a GitHub Actions schedule trigger, cron itself). This keeps it dependency-free and
+testable with a fake clock instead of needing real sleeping/threading in tests. `trigger(job_id)`
+runs a job immediately, outside its schedule. Example jobs: re-index documents, run evaluation,
+health checks, drift detection, backup - register any zero-argument callable.
+
+**Drift & retraining (not implemented)** — `drift.DriftDetector` Protocol covers `DRIFT_TYPES`
+(data, embedding, retrieval, prompt, model, user_query); `retraining.RetrainingTrigger` +
+`ValidationWorkflow` Protocols cover `RETRAINING_TRIGGERS` (scheduled, drift, manual). No model
+training happens in this repo. A concrete `ValidationWorkflow` would naturally run an
+`evaluation.runner.EvaluationRunner` pass and gate on `evaluation.report.compare_reports`, then
+hand off to `LifecycleManager` for promotion.
+
+**Governance** — `governance.GovernanceLog` is the audit trail: every `record()`/
+`record_transition()`/`record_approval()`/`link_lineage()`/`check_policy()` call appends an
+`AuditEvent`, queryable via `.history(resource=...)`. `link_lineage(asset_id, artifact_id,
+version)` tracks which artifact versions produced a given model asset, so "what actually went
+into this production model" stays answerable. `check_policy(rule_name, condition, message)`
+records the outcome either way (a passed check is just as visible as a failed one) and raises
+`PolicyViolationError` on failure.
+
+**Backup & recovery** — `backup.BackupManager.create_snapshot({name: component, ...})` writes a
+timestamped local JSON file; any component with `.export_state()`/`.import_state()` qualifies
+(`ModelRegistry`, `ArtifactRegistry`, `ConfigurationManager`, `FeatureFlagManager` all implement
+it). `recovery.RecoveryManager.restore_snapshot(path, components)` restores only the components
+explicitly passed in, silently skipping anything else present in the snapshot. `backup.BackupTarget`
+(a cloud destination - S3/Azure Blob/GCS) is an extension point, not implemented; `BackupManager`
+only ever writes locally.
+
+**Permissions (RBAC, no auth)** — `permissions.py`: `Role` (Administrator/MLEngineer/
+DataScientist/Reviewer/ReadOnly) × `Permission` via a static `ROLE_PERMISSIONS` matrix;
+`has_permission(role, permission)`/`require_permission(role, permission)` (raises
+`PermissionDeniedError`). This only answers "given a role, is X allowed" - establishing *who* the
+actor is (login, sessions, tokens) is entirely out of scope and the caller's responsibility.
+
+**Observability** — `mlops/telemetry.py` follows the exact same pattern as
+`rag/guardrails/telemetry.py`: OTel API counters (`mlops.operations`, `mlops.audit_events`),
+no-op with no `MeterProvider` configured, never raises. `PlatformManager` calls it on every
+operation (register/promote/backup/restore) alongside the matching `GovernanceLog` entry, so
+metrics and audit trail always move together.
 
 ## Architecture rules (do not violate)
 - Factory pattern in service_factory.py gates unwired providers via
