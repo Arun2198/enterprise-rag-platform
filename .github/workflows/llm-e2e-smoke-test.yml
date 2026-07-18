@@ -1,0 +1,27 @@
+name: LLM E2E Smoke Test (GitHub Models)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  models: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v8
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run LLM smoke test
+        env:
+          GENERATION_PROVIDER: openai_compatible
+          LLM_BASE_URL: https://models.github.ai/inference
+          LLM_MODEL_NAME: openai/gpt-4o-mini
+          LLM_API_KEY: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run python scripts/llm_e2e_smoke_test.py
