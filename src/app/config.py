@@ -24,6 +24,10 @@ class Settings:
     reranker_enabled: bool = True
     reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     reranker_candidate_multiplier: int = 4
+    guardrails_enabled: bool = True
+    pii_guard_enabled: bool = True
+    hallucination_guard_enabled: bool = True
+    groundedness_threshold: float = 0.60
 
 
 def load_settings() -> Settings:
@@ -52,4 +56,10 @@ def load_settings() -> Settings:
         reranker_candidate_multiplier=int(
             os.getenv("RERANKER_CANDIDATE_MULTIPLIER", "4")
         ),
+        guardrails_enabled=_parse_bool(os.getenv("GUARDRAILS_ENABLED", "true")),
+        pii_guard_enabled=_parse_bool(os.getenv("PII_GUARD_ENABLED", "true")),
+        hallucination_guard_enabled=_parse_bool(
+            os.getenv("HALLUCINATION_GUARD_ENABLED", "true")
+        ),
+        groundedness_threshold=float(os.getenv("GROUNDEDNESS_THRESHOLD", "0.60")),
     )

@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel
 from pydantic import Field
 
@@ -29,3 +31,4 @@ class AskResponse(BaseModel):
     answer: str
     sources: list[Source]
     confidence: float
+    guardrail_flags: dict[str, Any] = Field(default_factory=dict)

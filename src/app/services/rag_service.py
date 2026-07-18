@@ -7,6 +7,8 @@ from rag.embeddings.base import Embedder
 from rag.embeddings.hashing_embedder import HashingEmbedder
 from rag.generation.base import Answerer
 from rag.generation.extractive_answerer import ExtractiveAnswerer
+from rag.guardrails.base import Action
+from rag.guardrails.manager import GuardrailManager
 from rag.retrieval.hybrid_retrieval import HybridRetriever
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 from rag.retrieval.reranker import CrossEncoderReranker
@@ -24,7 +26,12 @@ class RAGService:
         vector_store: VectorStore | None = None,
         answerer: Answerer | None = None,
         reranker: CrossEncoderReranker | None = None,
-        candidate_multiplier: int = 4
+        candidate_multiplier: int = 4,
+        guardrail_manager: GuardrailManager | None = None,
+        guardrails_enabled: bool = True,
+        pii_guard_enabled: bool = True,
+        hallucination_guard_enabled: bool = True,
+        groundedness_threshold: float = 0.60
     ) -> None:
         self.ingestion_pipeline = ingestion_pipeline or IngestionPipeline()
         self.chunker = chunker or RecursiveChunker()
@@ -33,6 +40,16 @@ class RAGService:
         self.answerer = answerer or ExtractiveAnswerer()
         self.reranker = reranker
         self.candidate_multiplier = candidate_multiplier
+        self.guardrail_manager = guardrail_manager or (
+            GuardrailManager.default(
+                embedder=self.embedder,
+                pii_enabled=pii_guard_enabled,
+                hallucination_enabled=hallucination_guard_enabled,
+                groundedness_threshold=groundedness_threshold
+            )
+            if guardrails_enabled else
+            GuardrailManager(guardrails=[])
+        )
         self.retriever = HybridRetriever(
             vector_store=self.vector_store,
             embedder=self.embedder
@@ -78,6 +95,17 @@ class RAGService:
         query: str,
         top_k: int = 5
     ) -> AskResponse:
+        input_result = self.guardrail_manager.run_input(query)
+
+        if input_result.action == Action.BLOCK:
+            return AskResponse(
+                answer=input_result.text,
+                sources=[],
+                confidence=0.0,
+                guardrail_flags=input_result.flags
+            )
+
+        query = input_result.text
         retrieved = self._retrieve(
             query=query,
             top_k=top_k
@@ -86,6 +114,20 @@ class RAGService:
             query=query,
             retrieved_chunks=retrieved
         )
+
+        output_result = self.guardrail_manager.run_output(
+            query=query,
+            answer=answer,
+            retrieved_chunks=retrieved
+        )
+
+        if output_result.action == Action.BLOCK:
+            return AskResponse(
+                answer=output_result.text,
+                sources=[],
+                confidence=0.0,
+                guardrail_flags=output_result.flags
+            )
 
         sources = [
             Source(
@@ -104,9 +146,10 @@ class RAGService:
         )
 
         return AskResponse(
-            answer=answer,
+            answer=output_result.text,
             sources=sources,
-            confidence=round(max(0.0, min(confidence, 1.0)), 4)
+            confidence=round(max(0.0, min(confidence, 1.0)), 4),
+            guardrail_flags=output_result.flags
         )
 
     def _retrieve(

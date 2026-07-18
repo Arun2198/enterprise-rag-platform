@@ -61,5 +61,9 @@ def build_rag_service(
     return RAGService(
         answerer=answerer,
         reranker=reranker,
-        candidate_multiplier=settings.reranker_candidate_multiplier
+        candidate_multiplier=settings.reranker_candidate_multiplier,
+        guardrails_enabled=settings.guardrails_enabled,
+        pii_guard_enabled=settings.pii_guard_enabled,
+        hallucination_guard_enabled=settings.hallucination_guard_enabled,
+        groundedness_threshold=settings.groundedness_threshold
     )

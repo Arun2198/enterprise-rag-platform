@@ -1,6 +1,8 @@
 from app.services.rag_service import RAGService
 from rag.chunking.chunk import Chunk
 from rag.chunking.recursive_chunker import RecursiveChunker
+from rag.guardrails.base import Action
+from rag.guardrails.manager import GuardrailResult
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 
@@ -128,3 +130,142 @@ def test_ask_forwards_reranked_chunks_unchanged_to_answerer(tmp_path):
     assert captured["query"] == "policy question"
     assert reranker.received_top_k == 3
     assert response.answer == "recorded answer"
+
+
+class _FixedAnswerer:
+
+    def __init__(self, answer: str):
+        self._answer = answer
+
+    def answer(self, query, retrieved_chunks):
+        return self._answer
+
+
+def test_ask_redacts_pii_in_final_answer(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("# Policy\nSome policy content here.", encoding="utf-8")
+
+    service = RAGService(answerer=_FixedAnswerer("Contact john@company.com for help."))
+    service.ingest([str(file_path)])
+
+    response = service.ask("policy question", top_k=3)
+
+    assert "[REDACTED_EMAIL]" in response.answer
+    assert "john@company.com" not in response.answer
+    assert response.guardrail_flags["pii_detected"] is True
+
+
+def test_ask_flags_hallucination_in_guardrail_flags(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("# Policy\nContractors receive 10 days of leave.", encoding="utf-8")
+
+    service = RAGService(
+        answerer=_FixedAnswerer("Completely unrelated statement about astronomy.")
+    )
+    service.ingest([str(file_path)])
+
+    response = service.ask("policy question", top_k=3)
+
+    assert response.guardrail_flags["hallucination"] is True
+    assert "groundedness" in response.guardrail_flags
+
+
+def test_ask_clean_answer_passes_guardrails_unchanged(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text(
+        "# Policy\nContractors receive 10 days of leave.",
+        encoding="utf-8"
+    )
+
+    service = RAGService(answerer=_FixedAnswerer("Contractors receive 10 days of leave."))
+    service.ingest([str(file_path)])
+
+    response = service.ask("How many leave days do contractors receive?", top_k=3)
+
+    assert response.answer == "Contractors receive 10 days of leave."
+    assert response.guardrail_flags["pii_detected"] is False
+    assert response.guardrail_flags["hallucination"] is False
+
+
+def test_ask_bypasses_guardrails_when_disabled(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("# Policy\nSome policy content here.", encoding="utf-8")
+
+    service = RAGService(
+        answerer=_FixedAnswerer("Contact john@company.com for help."),
+        guardrails_enabled=False
+    )
+    service.ingest([str(file_path)])
+
+    response = service.ask("policy question", top_k=3)
+
+    assert response.answer == "Contact john@company.com for help."
+    assert response.guardrail_flags == {}
+
+
+class _BlockingGuardrailManager:
+
+    def __init__(self, block_input: bool = False, block_output: bool = False):
+        self.block_input = block_input
+        self.block_output = block_output
+        self.run_input_calls = 0
+        self.run_output_calls = 0
+
+    def run_input(self, query):
+        self.run_input_calls += 1
+        action = Action.BLOCK if self.block_input else Action.ALLOW
+        text = "blocked at input" if self.block_input else query
+        return GuardrailResult(findings=[], action=action, text=text, flags={"blocked": self.block_input})
+
+    def run_output(self, query, answer, retrieved_chunks):
+        self.run_output_calls += 1
+        action = Action.BLOCK if self.block_output else Action.ALLOW
+        text = "blocked at output" if self.block_output else answer
+        return GuardrailResult(findings=[], action=action, text=text, flags={"blocked": self.block_output})
+
+
+def test_ask_blocks_before_retrieval_when_input_guardrail_blocks():
+
+    class StubRetriever:
+
+        def __init__(self):
+            self.calls = 0
+
+        def retrieve(self, query, top_k, metadata_filter=None):
+            self.calls += 1
+            return []
+
+    guardrail_manager = _BlockingGuardrailManager(block_input=True)
+    service = RAGService(guardrail_manager=guardrail_manager)
+    service.retriever = StubRetriever()
+
+    response = service.ask("malicious query", top_k=3)
+
+    assert response.answer == "blocked at input"
+    assert response.sources == []
+    assert response.confidence == 0.0
+    assert guardrail_manager.run_output_calls == 0
+    assert service.retriever.calls == 0
+
+
+def test_ask_blocks_and_hides_sources_when_output_guardrail_blocks(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("# Policy\nSensitive policy content.", encoding="utf-8")
+
+    guardrail_manager = _BlockingGuardrailManager(block_output=True)
+    service = RAGService(
+        answerer=_FixedAnswerer("some answer"),
+        guardrail_manager=guardrail_manager
+    )
+    service.ingest([str(file_path)])
+
+    response = service.ask("policy question", top_k=3)
+
+    assert response.answer == "blocked at output"
+    assert response.sources == []
+    assert response.confidence == 0.0

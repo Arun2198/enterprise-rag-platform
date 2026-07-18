@@ -96,6 +96,39 @@ providers means passing a different instance into `RAGService.__init__`.
    without calling the LLM when there are no retrieved chunks, retries only transient failures
    (HTTP 429/500/502/503/504) with exponential backoff, and returns a fallback string on
    exhausted/non-retryable failures instead of raising.
+8. **Guardrails** (`src/rag/guardrails/`) — every `Guardrail` (`base.py`) implements one
+   `check(context) -> GuardrailFinding` method and declares a `stage` (`INPUT` or `OUTPUT`).
+   `GuardrailManager` (`manager.py`) runs the guardrails registered for a given stage, applies any
+   redactions in sequence, and resolves the strictest `Action` (`ALLOW < WARN < REDACT < ESCALATE
+   < BLOCK`) across triggered findings. `RAGService.ask()` calls `run_input(query)` before
+   retrieval (a `BLOCK` there short-circuits before any retrieval/generation happens) and
+   `run_output(query, answer, retrieved_chunks)` after generation (a `BLOCK` there replaces the
+   answer and empties `sources`, so a blocked response never leaks retrieved chunk text). Phase 1
+   default guardrails (both output-stage, wired by `GuardrailManager.default()`):
+   `PIIGuard` (`pii_guard.py`, regex redaction for email/phone/SSN/credit-card/Aadhaar, PII_GUARD_ENABLED)
+   and `HallucinationDetector` (`hallucination_detector.py`, token-overlap groundedness blended
+   with embedding cosine similarity when an `Embedder` is available — reuses `RAGService`'s own
+   `HashingEmbedder`, no new dependency — HALLUCINATION_GUARD_ENABLED /
+   GROUNDEDNESS_THRESHOLD). `AskResponse.guardrail_flags` is built by
+   `GuardrailManager._build_flags()`: `pii_detected`/`hallucination`/`groundedness` are flattened
+   to match the HLD's example shape, plus a generic `details` list so any other guardrail's
+   findings show up automatically without a schema change. Three more lightweight, dependency-free
+   guardrails exist and implement the same interface but are **not** in the Phase 1 default set -
+   register them explicitly to opt in: `PromptInjectionGuard` (input stage, regex heuristics for
+   injection/jailbreak phrasing), `SecretLeakageGuard` (output stage, API key/token/private-key
+   patterns), `ProfanityGuard` (output stage, small illustrative wordlist). `PolicyEngine`
+   (`policy.py`) evaluates configurable `PolicyRule`s (condition: guardrail name + min severity
+   and/or a metadata threshold) that can escalate — never downgrade — the action a `GuardrailManager`
+   would otherwise take; `PolicyEngine.default_policies()` implements the HLD's two example
+   policies. It is **not** attached by `GuardrailManager.default()` — Phase 1 findings apply their
+   own suggested action directly (PII → redact, hallucination → warn, never auto-block); pass
+   `policy_engine=` explicitly to opt in. Guardrails needing real ML models — Microsoft Presidio,
+   toxicity/hate-speech classifiers, NLI/BERTScore/RAGAS/LLM-as-judge hallucination scoring — are
+   **not implemented**; they'd need new heavy dependencies, and the same `Guardrail` interface is
+   what they'd implement when added. Same for OpenTelemetry/Prometheus export of the metrics the
+   HLD lists (guardrail latency, PII detections, hallucination rate, blocked responses, average
+   groundedness) — currently only structured `logging` calls (guardrail name, stage, triggered,
+   severity, action, latency; never secrets, redacted values, or answer/prompt text).
 
 **Wiring:** `app/service_factory.py::build_rag_service()` reads `app/config.py::Settings` (from
 env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, `LLM_*`,
@@ -108,7 +141,10 @@ by the caller directly, since those need externally-managed authenticated client
 doesn't build. `RERANKER_ENABLED` (default `true`), `RERANKER_MODEL_NAME`, and
 `RERANKER_CANDIDATE_MULTIPLIER` control the reranking stage independently of which generation
 provider is active — set `RERANKER_ENABLED=false` to bypass it entirely and get the pre-reranking
-`HybridRetriever` behavior back.
+`HybridRetriever` behavior back. `GUARDRAILS_ENABLED` (default `true`) is the master switch for
+the whole guardrails stage — `false` gives `RAGService` an empty `GuardrailManager` (no findings,
+`guardrail_flags` comes back as `{}`); `PII_GUARD_ENABLED`, `HALLUCINATION_GUARD_ENABLED`, and
+`GROUNDEDNESS_THRESHOLD` control the Phase 1 defaults individually.
 
 **Evaluation** (`src/evaluation/metrics.py`) is a standalone module of retrieval metrics
 (`recall_at_k`, `precision_at_k`, `mean_reciprocal_rank`) — not wired into the service, used for

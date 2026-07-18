@@ -79,3 +79,48 @@ def test_build_rag_service_wires_reranker_when_enabled(mock_reranker_class):
     mock_reranker_class.assert_called_once_with(
         model_name="cross-encoder/custom-model"
     )
+
+
+def test_build_rag_service_disables_guardrails_when_guardrails_disabled():
+
+    settings = Settings(guardrails_enabled=False)
+
+    service = build_rag_service(settings)
+
+    assert service.guardrail_manager.guardrails == []
+
+
+def test_build_rag_service_wires_guardrails_when_enabled():
+
+    settings = Settings(
+        guardrails_enabled=True,
+        pii_guard_enabled=True,
+        hallucination_guard_enabled=False,
+        groundedness_threshold=0.75
+    )
+
+    service = build_rag_service(settings)
+
+    guardrail_names = [g.name for g in service.guardrail_manager.guardrails]
+
+    assert guardrail_names == ["pii_guard"]
+
+
+def test_build_rag_service_wires_hallucination_guard_with_configured_threshold():
+
+    settings = Settings(
+        guardrails_enabled=True,
+        pii_guard_enabled=False,
+        hallucination_guard_enabled=True,
+        groundedness_threshold=0.75
+    )
+
+    service = build_rag_service(settings)
+
+    hallucination_guards = [
+        g for g in service.guardrail_manager.guardrails
+        if g.name == "hallucination_detector"
+    ]
+
+    assert len(hallucination_guards) == 1
+    assert hallucination_guards[0].threshold == 0.75
