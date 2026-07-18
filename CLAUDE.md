@@ -94,3 +94,31 @@ offline retrieval-quality checks.
 Tests in `tests/unit/` mirror this structure one-to-one and mostly test each layer in isolation
 via real (non-mocked) local implementations, plus `test_api.py` for an end-to-end
 ingest-then-ask flow through the FastAPI `TestClient`.
+
+
+## Architecture rules (do not violate)
+- Factory pattern in service_factory.py gates unwired providers via
+  ServiceConfigurationError. Never silently wire a new provider without
+  updating both the factory AND its guard.
+- All cross-service data must match the contracts in schemas.py /
+  ingestion/contracts/. Don't invent new fields without updating the
+  contract + tests.
+- Every new module needs a corresponding test in tests/unit, matching
+  the existing style (see test_recursive_chunker.py as the pattern).
+
+## Commands
+- Run tests: uv run pytest tests/unit -v
+- Run app: uv run python main.py
+- Run API: uv run uvicorn app.main:app --reload --app-dir src
+
+## Writing style for all code, comments, docstrings, and docs
+- Write comments and docstrings the way a working engineer actually writes
+  them: brief, practical, occasionally informal. Not exhaustive, not
+  textbook-style.
+- No mention of AI assistance, Claude, or any AI tool anywhere — not in
+  code comments, docstrings, README, commit messages, or PR descriptions.
+- No em-dashes or corporate-sounding phrasing ("leverages", "robust
+  solution", "seamlessly"). Write like a person explaining a decision to
+  a teammate.
+- Commit messages: short, conventional (feat/fix/refactor/test prefix),
+  no trailers beyond what's normal for a solo dev commit.
