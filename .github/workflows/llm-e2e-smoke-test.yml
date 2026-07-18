@@ -20,6 +20,7 @@ jobs:
 
       - name: Run LLM smoke test
         env:
+          PYTHONPATH: src
           GENERATION_PROVIDER: openai_compatible
           LLM_BASE_URL: https://models.github.ai/inference
           LLM_MODEL_NAME: openai/gpt-4o-mini
