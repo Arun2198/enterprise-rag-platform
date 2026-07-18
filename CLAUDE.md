@@ -74,16 +74,26 @@ providers means passing a different instance into `RAGService.__init__`.
    over-fetched candidate set (`top_k * 4`), then truncates to `top_k`.
 6. **Generation** (`src/rag/generation/`) — `Answerer` protocol. `ExtractiveAnswerer` picks the
    best-overlap sentence from retrieved chunks (no LLM call, fully deterministic — grounded by
-   construction since it only ever returns retrieved text). `BedrockAnswerer` is the production
-   adapter: takes an injected boto3 `bedrock-runtime` client and builds an Anthropic
-   Messages-API-shaped payload for `invoke_model`.
+   construction since it only ever returns retrieved text). `BedrockAnswerer` and
+   `OpenAICompatibleAnswerer` are LLM-backed adapters that share one grounded prompt template
+   (`rag/generation/prompt.py::build_grounded_prompt`) so every provider answers only from
+   retrieved context and cites the same source chunk ids. `BedrockAnswerer` takes an injected
+   boto3 `bedrock-runtime` client. `OpenAICompatibleAnswerer` builds its own `openai.OpenAI`
+   client from `api_key`/`base_url`/`model_name` and works against any OpenAI-compatible Chat
+   Completions endpoint (OpenAI, Azure OpenAI, GitHub Models, Ollama, OpenRouter, Groq, ...) by
+   changing only those config values — no code changes. It returns a fixed fallback string
+   without calling the LLM when there are no retrieved chunks, retries only transient failures
+   (HTTP 429/500/502/503/504) with exponential backoff, and returns a fallback string on
+   exhausted/non-retryable failures instead of raising.
 
 **Wiring:** `app/service_factory.py::build_rag_service()` reads `app/config.py::Settings` (from
-env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, etc.) and
-currently only permits the local/default providers (`memory`, `hashing`, `extractive`) —
-requesting anything else raises `ServiceConfigurationError` with a message explaining that the
-production adapter (`OpenSearchVectorStore`, `BedrockAnswerer`) must be constructed and injected
-by the caller directly, since those need authenticated clients the factory doesn't have.
+env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, `LLM_*`, etc.).
+`GENERATION_PROVIDER` accepts `extractive` (default) or `openai_compatible` (requires
+`LLM_BASE_URL` + `LLM_API_KEY`, raises `ServiceConfigurationError` if either is missing); any
+other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` and `EMBEDDING_PROVIDER`
+only permit their local/default values (`memory`, `hashing`) — the production adapters
+(`OpenSearchVectorStore`, `BedrockAnswerer`) must be constructed and injected by the caller
+directly, since those need externally-managed authenticated clients the factory doesn't build.
 
 **Evaluation** (`src/evaluation/metrics.py`) is a standalone module of retrieval metrics
 (`recall_at_k`, `precision_at_k`, `mean_reciprocal_rank`) — not wired into the service, used for

@@ -1,6 +1,7 @@
 import json
 from typing import Any
 
+from rag.generation.prompt import build_grounded_prompt
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 
@@ -29,7 +30,7 @@ class BedrockAnswerer:
         if not retrieved_chunks:
             return "I could not find relevant context in the indexed documents."
 
-        prompt = self._build_prompt(query, retrieved_chunks)
+        prompt = build_grounded_prompt(query, retrieved_chunks)
         response = self.client.invoke_model(
             modelId=self.model_id,
             body=json.dumps(self._claude_messages_payload(prompt)),
@@ -44,24 +45,6 @@ class BedrockAnswerer:
             return content[0]["text"].strip()
 
         return ""
-
-    def _build_prompt(
-        self,
-        query: str,
-        retrieved_chunks: list[RetrievedChunk]
-    ) -> str:
-        context = "\n\n".join(
-            f"Source {index + 1} ({item.chunk.chunk_id}):\n{item.chunk.text}"
-            for index, item in enumerate(retrieved_chunks)
-        )
-
-        return (
-            "Answer the question using only the provided context. "
-            "If the answer is not in the context, say you do not know.\n\n"
-            f"Context:\n{context}\n\n"
-            f"Question: {query}\n\n"
-            "Answer:"
-        )
 
     def _claude_messages_payload(
         self,
