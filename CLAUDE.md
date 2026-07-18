@@ -2,12 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Known issue: missing sample document
+## Sample data
 
-`sample_documents/AI-RMF-1stdraft.pdf`, referenced by `main.py` and
-`tests/unit/test_pdf_parser.py::test_pdf_parser_success`, is not present in the repo (never
-committed). `uv run python main.py` and that one test will fail with `FILE_NOT_FOUND` until a
-PDF is placed at that path — this is the only remaining gap.
+`sample_documents/AI-RMF-1stdraft.pdf` (NIST AI Risk Management Framework, Initial Draft,
+March 2022) backs `main.py`'s demo run and `tests/unit/test_pdf_parser.py::test_pdf_parser_success`.
 
 (`src/ingestion/contracts/` and `src/ingestion/parsers/base_parser.py` + `pdf_parser.py` were
 previously missing from git — only stale `__pycache__/*.pyc` files had been committed — and were
