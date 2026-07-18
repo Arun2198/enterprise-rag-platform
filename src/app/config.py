@@ -39,6 +39,9 @@ class Settings:
     llm_judge_api_key: str | None = None
     llm_judge_model_name: str | None = None
     llm_judge_threshold: float = 0.60
+    evaluation_enabled: bool = True
+    evaluation_default_k: int = 5
+    evaluation_report_dir: str = "evaluation/reports"
 
 
 def load_settings() -> Settings:
@@ -94,4 +97,7 @@ def load_settings() -> Settings:
         llm_judge_api_key=os.getenv("LLM_JUDGE_API_KEY"),
         llm_judge_model_name=os.getenv("LLM_JUDGE_MODEL_NAME"),
         llm_judge_threshold=float(os.getenv("LLM_JUDGE_THRESHOLD", "0.60")),
+        evaluation_enabled=_parse_bool(os.getenv("EVALUATION_ENABLED", "true")),
+        evaluation_default_k=int(os.getenv("EVALUATION_DEFAULT_K", "5")),
+        evaluation_report_dir=os.getenv("EVALUATION_REPORT_DIR", "evaluation/reports"),
     )

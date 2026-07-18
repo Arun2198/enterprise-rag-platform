@@ -31,6 +31,9 @@ uv run python main.py
 
 # run the FastAPI service locally
 uv run uvicorn app.main:app --reload --app-dir src
+
+# run retrieval evaluation against the golden dataset
+uv run python evaluation/run_eval.py --dataset evaluation/golden_dataset.json --k 1 3 5 --json
 ```
 
 `pyproject.toml` sets `pythonpath = ["src"]` for pytest, so tests import top-level packages
@@ -193,13 +196,83 @@ ML-backed guardrails: `PRESIDIO_PII_GUARD_ENABLED` / `PRESIDIO_SCORE_THRESHOLD` 
 `LLM_JUDGE_MODEL_NAME` / `LLM_JUDGE_THRESHOLD` (base_url/api_key fall back to `LLM_BASE_URL`/
 `LLM_API_KEY` if unset).
 
-**Evaluation** (`src/evaluation/metrics.py`) is a standalone module of retrieval metrics
-(`recall_at_k`, `precision_at_k`, `mean_reciprocal_rank`) — not wired into the service, used for
-offline retrieval-quality checks.
-
 Tests in `tests/unit/` mirror this structure one-to-one and mostly test each layer in isolation
 via real (non-mocked) local implementations, plus `test_api.py` for an end-to-end
 ingest-then-ask flow through the FastAPI `TestClient`.
+
+## Evaluation framework
+
+Standalone from the app (`src/evaluation/`, top-level `evaluation/`) — a golden-dataset-driven
+retrieval benchmark, not wired into `RAGService`. It builds its own fresh ingestion/chunking/
+retrieval pipeline per run rather than reusing `RAGService`, since it needs to sweep
+chunk_size/embedder/reranker independently of whatever `GENERATION_PROVIDER`/`RERANKER_ENABLED`
+the app happens to be configured with.
+
+**Pipeline:** Golden Dataset → `EvaluationRunner` → `retrieve_fn(query, top_k) -> list[chunk_id]`
+→ `metrics.py` → `EvaluationReport` → console/JSON/CSV. `EvaluationRunner` (`runner.py`) is
+deliberately decoupled from `HybridRetriever`/`RAGService` — it only needs a plain callable, so
+the same runner works against a raw retriever, a reranked pipeline, or a test double. Adding a
+metric means adding a function to `metrics.py` and one line each in `EvaluationRunner
+._compute_query_metrics`/`_aggregate`; nothing about the runner's shape changes.
+
+**How to create a dataset** — JSON matching `schemas.GoldenQuery`/`GoldenDataset`
+(`name`, `source_documents`, `queries[]` with `id`/`query`/`relevant_chunk_ids`/`category`?/
+`difficulty`? — difficulty must be `easy`/`medium`/`hard` if present).
+`dataset.load_dataset(path)` validates and raises `DatasetValidationError` with a specific,
+locatable message (missing field, empty list, duplicate id, bad difficulty, ...) rather than
+letting a malformed dataset fail deep inside the runner. `relevant_chunk_ids` are exact
+`"{document_id}:{index}"` strings from `RecursiveChunker` — **positional, not content-addressed**,
+so they're only valid for the exact chunking parameters used to build them. To build a real
+dataset: ingest+chunk the source document with the chunker settings you intend to evaluate with,
+inspect the resulting `chunk_id`/`text` pairs, then hand-pick relevant ids per query (this is
+literally how `evaluation/golden_dataset.json` — 20 queries grounded in
+`sample_documents/AI-RMF-1stdraft.pdf` at `RecursiveChunker()` defaults — was built; don't
+fabricate ids without inspecting real chunks). `tests/unit/test_evaluation_integration.py` runs
+this dataset through the real PDF end-to-end and asserts `recall@10 > 0.5` specifically so a
+future chunker default change that invalidates the ids fails loudly instead of silently.
+
+**How to add a metric** — add a `(retrieved_ids: list[str], relevant_ids: set[str], k: int) ->
+float` function to `metrics.py` (per-query) or match `mean_reciprocal_rank`'s shape
+(`list[list[str]], list[set[str]] -> float`, whole-dataset aggregate) for something that isn't
+naturally per-query. Existing: `recall_at_k`, `precision_at_k`, `hit_rate_at_k`, `ndcg_at_k`
+(binary relevance, standard DCG/IDCG), `mean_reciprocal_rank`, `average_rank` (mean 1-indexed
+position of each query's first hit; queries with zero hits are excluded, not penalized as
+infinite), `average_retrieved_documents`.
+
+**How to run evaluation** — `uv run python evaluation/run_eval.py --dataset
+evaluation/golden_dataset.json --k 1 3 5 --json --csv` (`--provider` picks the embedder:
+`hashing` or any sentence-transformers model name; `--reranker` enables the cross-encoder).
+Reports land in `EVALUATION_REPORT_DIR` (default `evaluation/reports/`, gitignored except
+`.gitkeep` — these are run artifacts, not source) as
+`{dataset_name}_{YYYYMMDD_HHMMSS}.{json,csv}`.
+
+**How to benchmark retrieval configurations** — `benchmark.BenchmarkRunner(dataset).run([
+BenchmarkConfig(label=..., chunk_size=..., chunk_overlap=..., minimum_chunk_size=...,
+embedder_name=..., use_reranker=...), ...])` builds one fresh, isolated pipeline per config
+(never cross-contaminated) and returns `list[(config, EvaluationReport)]`;
+`render_comparison_table(results)` prints a side-by-side table. **Caveat that matters**: since
+`relevant_chunk_ids` are positional, comparing `chunk_size`/`chunk_overlap` across configs against
+one fixed golden dataset will show recall collapsing toward zero for every non-matching size —
+that's correct behavior given ID-based relevance, not a bug (see `BenchmarkConfig`'s docstring).
+This dimension is meaningful for comparing embedder/reranker/hybrid choices at a *fixed* chunk
+size; comparing chunk sizes themselves needs a dataset rebuilt (or judged by chunk text, not id)
+per size under test.
+
+**How to compare experiments (regression detection)** — `report.compare_reports(current,
+baseline, threshold=0.02)` diffs two already-written JSON reports metric-by-metric
+(`MetricDelta.is_regression` when `delta < -threshold`); `--baseline <path>` on the CLI runs this
+automatically and exits `1` if any metric regressed (wire that exit code into CI if you want a
+gate). This is intentionally just a two-report diff, not a trend/dashboard system — see
+`ExperimentTracker` below.
+
+**Layers 2-4 (not implemented)** — `schemas.py` defines `GenerationMetric` (Layer 2: Groundedness/
+Faithfulness/Answer Relevance/Context Precision/Context Recall/RAGAS/LLM-as-a-Judge - scores one
+`(query, answer, retrieved_chunk_texts)` triple), `SystemMetricsCollector` (Layer 3: cost,
+throughput, memory, token usage, guardrail-specific rates beyond the retrieval latency Layer 1
+already measures directly), and `ExperimentTracker` (Layer 4: persisting/comparing reports across
+*many* runs for trend visualization, dashboards, CI/CD gating - beyond the single-baseline diff
+above) as `Protocol`s. None are implemented; a concrete implementation just needs to satisfy the
+Protocol shape and register itself - the runner, report format, and CLI don't change.
 
 
 ## Architecture rules (do not violate)
@@ -216,6 +289,7 @@ ingest-then-ask flow through the FastAPI `TestClient`.
 - Run tests: uv run pytest tests/unit -v
 - Run app: uv run python main.py
 - Run API: uv run uvicorn app.main:app --reload --app-dir src
+- Run evaluation: uv run python evaluation/run_eval.py --dataset evaluation/golden_dataset.json
 
 ## Writing style for all code, comments, docstrings, and docs
 - Write comments and docstrings the way a working engineer actually writes

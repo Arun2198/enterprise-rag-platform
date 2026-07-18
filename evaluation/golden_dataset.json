@@ -1,0 +1,152 @@
+{
+  "name": "ai-rmf-1stdraft",
+  "description": "Grounded in sample_documents/AI-RMF-1stdraft.pdf (NIST AI Risk Management Framework, Initial Draft, March 2022). relevant_chunk_ids use the default RecursiveChunker() settings against that document (document_id=AI-RMF-1stdraft) - re-chunking with different parameters invalidates these ids.",
+  "source_documents": ["sample_documents/AI-RMF-1stdraft.pdf"],
+  "queries": [
+    {
+      "id": "Q001",
+      "query": "When was this initial draft of the AI RMF released?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:2"],
+      "category": "framework-overview",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q002",
+      "query": "What principles does the AI RMF strive to follow?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:63"],
+      "category": "framework-overview",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q003",
+      "query": "What are the four stakeholder groups identified as intended audiences of the AI RMF?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:67"],
+      "category": "stakeholders",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q004",
+      "query": "What are AI risk thresholds?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:78"],
+      "category": "risk-management",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q005",
+      "query": "Is the AI RMF a checklist or compliance mechanism?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:83"],
+      "category": "risk-management",
+      "difficulty": "hard"
+    },
+    {
+      "id": "Q006",
+      "query": "What does reliability mean for an AI model?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:94"],
+      "category": "trustworthiness",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q007",
+      "query": "Which socio-technical characteristics have implications for addressing AI risk?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:101"],
+      "category": "trustworthiness",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q008",
+      "query": "What does explainability seek to provide in AI systems?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:103"],
+      "category": "trustworthiness",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q009",
+      "query": "What is the difference between explainability and interpretability?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:103", "AI-RMF-1stdraft:105"],
+      "category": "trustworthiness",
+      "difficulty": "hard"
+    },
+    {
+      "id": "Q010",
+      "query": "What does privacy refer to in the AI RMF taxonomy?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:107"],
+      "category": "trustworthiness",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q011",
+      "query": "What are the three major categories of bias identified by NIST?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:111"],
+      "category": "bias-fairness",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q012",
+      "query": "What guiding principles are relevant for AI risk?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:114"],
+      "category": "trustworthiness",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q013",
+      "query": "How does the AI RMF define accountability?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:117"],
+      "category": "governance",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q014",
+      "query": "What does transparency seek to remedy?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:119"],
+      "category": "trustworthiness",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q015",
+      "query": "What does the Map function do?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:128"],
+      "category": "core-functions",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q016",
+      "query": "What does the Measure function do?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:149"],
+      "category": "core-functions",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q017",
+      "query": "What does the Manage function do?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:160"],
+      "category": "core-functions",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q018",
+      "query": "What does the Govern function do?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:177"],
+      "category": "core-functions",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q019",
+      "query": "What are the four core functions of the AI RMF?",
+      "relevant_chunk_ids": [
+        "AI-RMF-1stdraft:128",
+        "AI-RMF-1stdraft:149",
+        "AI-RMF-1stdraft:160",
+        "AI-RMF-1stdraft:177"
+      ],
+      "category": "core-functions",
+      "difficulty": "hard"
+    },
+    {
+      "id": "Q020",
+      "query": "What is the goal of the AI RMF?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:205"],
+      "category": "framework-overview",
+      "difficulty": "medium"
+    }
+  ]
+}
