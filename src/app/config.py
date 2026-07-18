@@ -28,6 +28,17 @@ class Settings:
     pii_guard_enabled: bool = True
     hallucination_guard_enabled: bool = True
     groundedness_threshold: float = 0.60
+    presidio_pii_guard_enabled: bool = False
+    presidio_score_threshold: float = 0.5
+    presidio_entities: tuple[str, ...] | None = None
+    nli_hallucination_enabled: bool = False
+    nli_model_name: str = "cross-encoder/nli-deberta-v3-base"
+    nli_threshold: float = 0.50
+    llm_judge_enabled: bool = False
+    llm_judge_base_url: str | None = None
+    llm_judge_api_key: str | None = None
+    llm_judge_model_name: str | None = None
+    llm_judge_threshold: float = 0.60
 
 
 def load_settings() -> Settings:
@@ -62,4 +73,25 @@ def load_settings() -> Settings:
             os.getenv("HALLUCINATION_GUARD_ENABLED", "true")
         ),
         groundedness_threshold=float(os.getenv("GROUNDEDNESS_THRESHOLD", "0.60")),
+        presidio_pii_guard_enabled=_parse_bool(
+            os.getenv("PRESIDIO_PII_GUARD_ENABLED", "false")
+        ),
+        presidio_score_threshold=float(os.getenv("PRESIDIO_SCORE_THRESHOLD", "0.5")),
+        presidio_entities=(
+            tuple(os.getenv("PRESIDIO_ENTITIES").split(","))
+            if os.getenv("PRESIDIO_ENTITIES") else None
+        ),
+        nli_hallucination_enabled=_parse_bool(
+            os.getenv("NLI_HALLUCINATION_ENABLED", "false")
+        ),
+        nli_model_name=os.getenv(
+            "NLI_MODEL_NAME",
+            "cross-encoder/nli-deberta-v3-base"
+        ),
+        nli_threshold=float(os.getenv("NLI_THRESHOLD", "0.50")),
+        llm_judge_enabled=_parse_bool(os.getenv("LLM_JUDGE_ENABLED", "false")),
+        llm_judge_base_url=os.getenv("LLM_JUDGE_BASE_URL"),
+        llm_judge_api_key=os.getenv("LLM_JUDGE_API_KEY"),
+        llm_judge_model_name=os.getenv("LLM_JUDGE_MODEL_NAME"),
+        llm_judge_threshold=float(os.getenv("LLM_JUDGE_THRESHOLD", "0.60")),
     )

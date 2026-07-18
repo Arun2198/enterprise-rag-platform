@@ -14,6 +14,8 @@ from rag.guardrails.base import GuardrailFinding
 from rag.guardrails.base import GuardrailStage
 from rag.guardrails.hallucination_detector import HallucinationDetector
 from rag.guardrails.pii_guard import PIIGuard
+from rag.guardrails.telemetry import record_action
+from rag.guardrails.telemetry import record_finding
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
@@ -113,11 +115,14 @@ class GuardrailManager:
 
             findings.append(finding)
             self._log_finding(finding, stage, latency_seconds)
+            record_finding(finding, stage, latency_seconds)
 
         action = self._resolve_action(findings)
 
         if self.policy_engine is not None:
             action = self.policy_engine.evaluate(findings, default_action=action)
+
+        record_action(action, stage)
 
         if action == Action.BLOCK:
             current_text = BLOCKED_MESSAGE

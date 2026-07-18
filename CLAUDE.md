@@ -122,13 +122,53 @@ providers means passing a different instance into `RAGService.__init__`.
    would otherwise take; `PolicyEngine.default_policies()` implements the HLD's two example
    policies. It is **not** attached by `GuardrailManager.default()` — Phase 1 findings apply their
    own suggested action directly (PII → redact, hallucination → warn, never auto-block); pass
-   `policy_engine=` explicitly to opt in. Guardrails needing real ML models — Microsoft Presidio,
-   toxicity/hate-speech classifiers, NLI/BERTScore/RAGAS/LLM-as-judge hallucination scoring — are
-   **not implemented**; they'd need new heavy dependencies, and the same `Guardrail` interface is
-   what they'd implement when added. Same for OpenTelemetry/Prometheus export of the metrics the
-   HLD lists (guardrail latency, PII detections, hallucination rate, blocked responses, average
-   groundedness) — currently only structured `logging` calls (guardrail name, stage, triggered,
-   severity, action, latency; never secrets, redacted values, or answer/prompt text).
+   `policy_engine=` explicitly to opt in.
+
+   Three ML-backed guardrails also exist, none in the Phase 1 default set - `service_factory`
+   wires each in only when its own `*_ENABLED` flag is set:
+   - `PresidioPIIGuard` (`presidio_pii_guard.py`, `PRESIDIO_PII_GUARD_ENABLED`) - Microsoft
+     Presidio NER + pattern recognizers instead of plain regex, so it catches names/addresses/
+     other context-dependent PII the regex `PIIGuard` structurally can't. Loads a spaCy
+     `en_core_web_sm` model once at construction (pinned as a direct `uv` dependency via wheel
+     URL in `pyproject.toml`, so `uv sync` alone is enough - no separate `spacy download` step).
+     Registered *alongside* `PIIGuard`, not replacing it. Adds a custom Aadhaar
+     `PatternRecognizer` since Presidio has none built in. Overlapping spans (Presidio can flag a
+     `URL` entity fully inside an `EMAIL_ADDRESS` for the same text) are resolved by preferring
+     the higher-confidence, longer span; redaction then applies start-descending so earlier
+     replacements never shift not-yet-processed offsets.
+   - `NLIHallucinationDetector` (`nli_hallucination_detector.py`, `NLI_HALLUCINATION_ENABLED`,
+     default model `cross-encoder/nli-deberta-v3-base`) - same `sentence_transformers
+     .CrossEncoder` pattern as the reranker, but scores (chunk, answer) as (premise, hypothesis)
+     NLI pairs via `predict(pairs, apply_softmax=True)` and takes the max entailment probability
+     across chunks as groundedness (the answer only needs to be entailed by at least one chunk).
+     The 3-class label order (0=contradiction, 1=entailment, 2=neutral) is model-specific -
+     verified against this model's config.json; check again if the model name is ever changed.
+   - `LLMJudgeHallucinationDetector` (`llm_judge_hallucination_detector.py`, `LLM_JUDGE_ENABLED`)
+     - reuses `OpenAICompatibleAnswerer`'s client/retry pattern (own `openai.OpenAI` client,
+     retries only 429/500/502/503/504) to ask the configured LLM to score groundedness via a
+     JSON-only prompt; tolerates markdown-fenced JSON. Fails open (does not trigger, does not
+     block) on any API or parse failure, with `metadata["judge_available"] = False` marking that
+     case. If `LLM_JUDGE_BASE_URL`/`LLM_JUDGE_API_KEY` aren't set, falls back to the main
+     `LLM_BASE_URL`/`LLM_API_KEY`; `service_factory` raises `ServiceConfigurationError` at
+     startup if neither pair resolves.
+
+   Toxicity/hate-speech classification, BERTScore, and RAGAS are still not implemented - a
+   low-quality toxicity classifier can cause real harm and deserves a deliberate follow-up rather
+   than a quick add; BERTScore/RAGAS were judged to mostly duplicate what NLI/LLM-judge already
+   cover here. All three would implement the same `Guardrail` interface if added later.
+
+   **Observability** (`telemetry.py`) - `GuardrailManager._run()` calls `record_finding()` /
+   `record_action()` for every check via the OpenTelemetry API (`opentelemetry-api` +
+   `opentelemetry-sdk` are real dependencies, but no exporter is configured here). Instruments:
+   `guardrail.runs` / `guardrail.latency` (every check), `guardrail.pii_detections` (`PIIGuard`
+   and `PresidioPIIGuard` triggers), `guardrail.hallucination_flags` +
+   `guardrail.groundedness_score` (all three hallucination detectors), `guardrail.blocked_responses`
+   (any `Action.BLOCK`). With no `MeterProvider` configured these are cheap no-ops - a host app
+   can call `opentelemetry.metrics.set_meter_provider(...)` with a Prometheus or console exporter
+   at startup and every metric here starts flowing, retroactively, with zero changes on this side
+   (verified in `tests/unit/test_guardrails_telemetry.py`). Recording never raises - a broken
+   exporter must not break the guardrail pipeline it's observing. No live Prometheus/Grafana
+   server is set up or required by this repo.
 
 **Wiring:** `app/service_factory.py::build_rag_service()` reads `app/config.py::Settings` (from
 env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, `LLM_*`,
@@ -143,8 +183,15 @@ doesn't build. `RERANKER_ENABLED` (default `true`), `RERANKER_MODEL_NAME`, and
 provider is active — set `RERANKER_ENABLED=false` to bypass it entirely and get the pre-reranking
 `HybridRetriever` behavior back. `GUARDRAILS_ENABLED` (default `true`) is the master switch for
 the whole guardrails stage — `false` gives `RAGService` an empty `GuardrailManager` (no findings,
-`guardrail_flags` comes back as `{}`); `PII_GUARD_ENABLED`, `HALLUCINATION_GUARD_ENABLED`, and
-`GROUNDEDNESS_THRESHOLD` control the Phase 1 defaults individually.
+`guardrail_flags` comes back as `{}`) regardless of any other guardrail flag; `PII_GUARD_ENABLED`,
+`HALLUCINATION_GUARD_ENABLED`, and `GROUNDEDNESS_THRESHOLD` control the Phase 1 defaults
+individually. `service_factory._build_guardrail_manager()` (not `RAGService`'s own inline
+defaults) is what actually assembles the full list for real app wiring, including the opt-in
+ML-backed guardrails: `PRESIDIO_PII_GUARD_ENABLED` / `PRESIDIO_SCORE_THRESHOLD` /
+`PRESIDIO_ENTITIES` (comma-separated), `NLI_HALLUCINATION_ENABLED` / `NLI_MODEL_NAME` /
+`NLI_THRESHOLD`, and `LLM_JUDGE_ENABLED` / `LLM_JUDGE_BASE_URL` / `LLM_JUDGE_API_KEY` /
+`LLM_JUDGE_MODEL_NAME` / `LLM_JUDGE_THRESHOLD` (base_url/api_key fall back to `LLM_BASE_URL`/
+`LLM_API_KEY` if unset).
 
 **Evaluation** (`src/evaluation/metrics.py`) is a standalone module of retrieval metrics
 (`recall_at_k`, `precision_at_k`, `mean_reciprocal_rank`) — not wired into the service, used for

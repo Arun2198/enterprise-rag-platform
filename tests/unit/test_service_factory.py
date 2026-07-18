@@ -124,3 +124,114 @@ def test_build_rag_service_wires_hallucination_guard_with_configured_threshold()
 
     assert len(hallucination_guards) == 1
     assert hallucination_guards[0].threshold == 0.75
+
+
+@patch("app.service_factory.PresidioPIIGuard")
+def test_build_rag_service_wires_presidio_when_enabled(mock_presidio_class):
+
+    settings = Settings(
+        pii_guard_enabled=False,
+        hallucination_guard_enabled=False,
+        presidio_pii_guard_enabled=True,
+        presidio_score_threshold=0.7,
+        presidio_entities=("PERSON", "EMAIL_ADDRESS")
+    )
+
+    service = build_rag_service(settings)
+
+    assert service.guardrail_manager.guardrails == [mock_presidio_class.return_value]
+    mock_presidio_class.assert_called_once_with(
+        entities=("PERSON", "EMAIL_ADDRESS"),
+        score_threshold=0.7
+    )
+
+
+def test_build_rag_service_skips_presidio_when_disabled():
+
+    settings = Settings(
+        pii_guard_enabled=False,
+        hallucination_guard_enabled=False,
+        presidio_pii_guard_enabled=False
+    )
+
+    service = build_rag_service(settings)
+
+    assert service.guardrail_manager.guardrails == []
+
+
+@patch("app.service_factory.NLIHallucinationDetector")
+def test_build_rag_service_wires_nli_when_enabled(mock_nli_class):
+
+    settings = Settings(
+        pii_guard_enabled=False,
+        hallucination_guard_enabled=False,
+        nli_hallucination_enabled=True,
+        nli_model_name="cross-encoder/custom-nli",
+        nli_threshold=0.4
+    )
+
+    service = build_rag_service(settings)
+
+    assert service.guardrail_manager.guardrails == [mock_nli_class.return_value]
+    mock_nli_class.assert_called_once_with(
+        model_name="cross-encoder/custom-nli",
+        threshold=0.4
+    )
+
+
+@patch("app.service_factory.LLMJudgeHallucinationDetector")
+def test_build_rag_service_wires_llm_judge_when_enabled(mock_judge_class):
+
+    settings = Settings(
+        pii_guard_enabled=False,
+        hallucination_guard_enabled=False,
+        llm_judge_enabled=True,
+        llm_judge_base_url="https://judge.example.com/v1",
+        llm_judge_api_key="judge-key",
+        llm_judge_model_name="judge-model",
+        llm_judge_threshold=0.7
+    )
+
+    service = build_rag_service(settings)
+
+    assert service.guardrail_manager.guardrails == [mock_judge_class.return_value]
+    mock_judge_class.assert_called_once_with(
+        api_key="judge-key",
+        base_url="https://judge.example.com/v1",
+        model_name="judge-model",
+        threshold=0.7
+    )
+
+
+@patch("app.service_factory.LLMJudgeHallucinationDetector")
+def test_build_rag_service_llm_judge_falls_back_to_main_llm_settings(mock_judge_class):
+
+    settings = Settings(
+        pii_guard_enabled=False,
+        hallucination_guard_enabled=False,
+        llm_judge_enabled=True,
+        llm_base_url="https://main-llm.example.com/v1",
+        llm_api_key="main-key",
+        llm_model_name="main-model"
+    )
+
+    build_rag_service(settings)
+
+    mock_judge_class.assert_called_once_with(
+        api_key="main-key",
+        base_url="https://main-llm.example.com/v1",
+        model_name="main-model",
+        threshold=settings.llm_judge_threshold
+    )
+
+
+def test_build_rag_service_requires_credentials_for_llm_judge():
+
+    settings = Settings(
+        pii_guard_enabled=False,
+        hallucination_guard_enabled=False,
+        llm_judge_enabled=True
+    )
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)

@@ -18,4 +18,24 @@ class _FakeCrossEncoder:
         return [0.0 for _ in pairs]
 
 
+class _FakeNLICrossEncoder:
+    """
+    Same idea as _FakeCrossEncoder but shaped for NLIHallucinationDetector,
+    which calls predict(pairs, apply_softmax=True) expecting a
+    (n_pairs, 3) array of [contradiction, entailment, neutral]
+    probabilities. Not registered by GuardrailManager.default(), but
+    nothing should download a real model just by importing the module.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def predict(self, pairs, *args, **kwargs):
+        return [[0.0, 0.0, 1.0] for _ in pairs]
+
+
 patch("rag.retrieval.reranker.CrossEncoder", _FakeCrossEncoder).start()
+patch(
+    "rag.guardrails.nli_hallucination_detector.CrossEncoder",
+    _FakeNLICrossEncoder
+).start()
