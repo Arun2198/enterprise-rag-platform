@@ -1,4 +1,5 @@
 import logging
+import math
 import statistics
 import subprocess
 import time
@@ -8,12 +9,19 @@ from evaluation import metrics
 from evaluation.schemas import EvaluationReport
 from evaluation.schemas import ExperimentMetadata
 from evaluation.schemas import GoldenDataset
+from evaluation.schemas import GenerationMetric
 from evaluation.schemas import LatencyStats
 from evaluation.schemas import QueryEvaluation
 
 logger = logging.getLogger(__name__)
 
 RetrieveFn = Callable[[str, int], list[str]]
+
+# (query, retrieved_chunk_ids) -> (answer, retrieved_chunk_texts). Kept as a
+# plain callable, same philosophy as RetrieveFn - the runner doesn't need to
+# know about Answerer/RetrievedChunk/Chunk types, just something that can
+# turn ids into an answer plus the context text used to produce it.
+AnswerFn = Callable[[str, list[str]], tuple[str, list[str]]]
 
 DEFAULT_K_VALUES = (1, 3, 5, 10)
 
@@ -52,10 +60,16 @@ class EvaluationRunner:
     def __init__(
         self,
         retrieve_fn: RetrieveFn,
-        k_values: list[int] | None = None
+        k_values: list[int] | None = None,
+        answer_fn: AnswerFn | None = None,
+        generation_metrics: list[GenerationMetric] | None = None,
+        generation_top_k: int | None = None
     ) -> None:
         self.retrieve_fn = retrieve_fn
         self.k_values = k_values or list(DEFAULT_K_VALUES)
+        self.answer_fn = answer_fn
+        self.generation_metrics = generation_metrics or []
+        self.generation_top_k = generation_top_k or min(self.k_values)
 
     def run(
         self,
@@ -80,6 +94,7 @@ class EvaluationRunner:
 
             relevant_ids = set(query.relevant_chunk_ids)
             query_metrics = self._compute_query_metrics(retrieved_ids, relevant_ids)
+            answer, generation_scores = self._compute_generation_metrics(query.query, retrieved_ids)
 
             latencies.append(latency_seconds)
             retrieved_by_query.append(retrieved_ids)
@@ -94,7 +109,9 @@ class EvaluationRunner:
                     metrics=query_metrics,
                     retrieval_latency_seconds=latency_seconds,
                     category=query.category,
-                    difficulty=query.difficulty
+                    difficulty=query.difficulty,
+                    answer=answer,
+                    generation_metrics=generation_scores
                 )
             )
 
@@ -140,6 +157,24 @@ class EvaluationRunner:
 
         return query_metrics
 
+    def _compute_generation_metrics(
+        self,
+        query: str,
+        retrieved_ids: list[str]
+    ) -> tuple[str | None, dict[str, float]]:
+        if self.answer_fn is None or not self.generation_metrics:
+            return None, {}
+
+        answer, retrieved_chunk_texts = self.answer_fn(
+            query,
+            retrieved_ids[:self.generation_top_k]
+        )
+
+        return answer, {
+            metric.name: metric.score(query, answer, retrieved_chunk_texts)
+            for metric in self.generation_metrics
+        }
+
     def _aggregate(
         self,
         query_evaluations: list[QueryEvaluation],
@@ -160,7 +195,37 @@ class EvaluationRunner:
             retrieved_by_query
         )
 
+        for metric in self.generation_metrics:
+            aggregate[f"generation/{metric.name}"] = self._generation_mean(
+                query_evaluations,
+                metric.name
+            )
+
         return aggregate
+
+    def _generation_mean(
+        self,
+        query_evaluations: list[QueryEvaluation],
+        metric_name: str
+    ) -> float:
+        """
+        NaN scores (an LLM-judge metric that failed open, see
+        evaluation.generation_metrics.LLMJudgeGenerationMetric) are excluded
+        from the mean rather than counted as 0 - same "don't penalize what
+        we couldn't measure" treatment as average_rank excluding zero-hit
+        queries.
+        """
+        values = [
+            qe.generation_metrics[metric_name]
+            for qe in query_evaluations
+            if metric_name in qe.generation_metrics
+            and not math.isnan(qe.generation_metrics[metric_name])
+        ]
+
+        if not values:
+            return 0.0
+
+        return sum(values) / len(values)
 
     def _mean(
         self,

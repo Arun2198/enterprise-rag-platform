@@ -131,6 +131,81 @@ def test_runner_uses_max_k_for_single_retrieve_call():
     assert calls == [10]
 
 
+def test_runner_skips_generation_metrics_when_not_configured():
+
+    dataset = GoldenDataset(
+        name="test",
+        queries=[GoldenQuery(id="Q1", query="q1", relevant_chunk_ids=["a"])]
+    )
+
+    runner = EvaluationRunner(retrieve_fn=lambda query, top_k: ["a"], k_values=[1])
+    report = runner.run(dataset, _metadata())
+
+    assert report.query_evaluations[0].answer is None
+    assert report.query_evaluations[0].generation_metrics == {}
+    assert "generation/groundedness" not in report.aggregate_metrics
+
+
+def test_runner_computes_generation_metrics_when_configured():
+
+    dataset = GoldenDataset(
+        name="test",
+        queries=[GoldenQuery(id="Q1", query="q1", relevant_chunk_ids=["a"])]
+    )
+    answer_calls = []
+
+    def answer_fn(query, retrieved_ids):
+        answer_calls.append((query, retrieved_ids))
+        return "generated answer", ["chunk text a", "chunk text b"]
+
+    class FixedMetric:
+        name = "fixed"
+
+        def score(self, query, answer, retrieved_chunk_texts):
+            return 0.5 if answer == "generated answer" else 0.0
+
+    runner = EvaluationRunner(
+        retrieve_fn=lambda query, top_k: ["a", "b", "c"][:top_k],
+        k_values=[1, 3],
+        answer_fn=answer_fn,
+        generation_metrics=[FixedMetric()]
+    )
+    report = runner.run(dataset, _metadata())
+
+    assert answer_calls == [("q1", ["a"])]  # sliced to generation_top_k = min(k_values) = 1
+    assert report.query_evaluations[0].answer == "generated answer"
+    assert report.query_evaluations[0].generation_metrics == {"fixed": 0.5}
+    assert report.aggregate_metrics["generation/fixed"] == 0.5
+
+
+def test_runner_excludes_nan_generation_scores_from_aggregate():
+
+    dataset = GoldenDataset(
+        name="test",
+        queries=[
+            GoldenQuery(id="Q1", query="q1", relevant_chunk_ids=["a"]),
+            GoldenQuery(id="Q2", query="q2", relevant_chunk_ids=["a"])
+        ]
+    )
+
+    class FlakyMetric:
+        name = "flaky"
+
+        def score(self, query, answer, retrieved_chunk_texts):
+            return float("nan") if query == "q1" else 0.8
+
+    runner = EvaluationRunner(
+        retrieve_fn=lambda query, top_k: ["a"],
+        k_values=[1],
+        answer_fn=lambda query, ids: ("answer", ["ctx"]),
+        generation_metrics=[FlakyMetric()]
+    )
+    report = runner.run(dataset, _metadata())
+
+    # the nan-scored query is excluded, not averaged in as 0
+    assert report.aggregate_metrics["generation/flaky"] == 0.8
+
+
 def test_runner_metadata_is_carried_through_to_report():
 
     dataset = GoldenDataset(

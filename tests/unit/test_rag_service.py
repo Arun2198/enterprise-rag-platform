@@ -1,9 +1,31 @@
+from app.services.rag_service import RERANKER_FLAG_NAME
 from app.services.rag_service import RAGService
+from mlops.feature_flags import FeatureFlagManager
 from rag.chunking.chunk import Chunk
 from rag.chunking.recursive_chunker import RecursiveChunker
 from rag.guardrails.base import Action
 from rag.guardrails.manager import GuardrailResult
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
+
+
+class _StubRetriever:
+
+    def __init__(self):
+        self.calls = []
+
+    def retrieve(self, query, top_k, metadata_filter=None):
+        self.calls.append(top_k)
+        return []
+
+
+class _StubReranker:
+
+    def __init__(self):
+        self.called = False
+
+    def rerank(self, query, candidates, top_k):
+        self.called = True
+        return []
 
 
 def test_rag_service_ingests_and_answers_from_markdown(tmp_path):
@@ -269,3 +291,64 @@ def test_ask_blocks_and_hides_sources_when_output_guardrail_blocks(tmp_path):
     assert response.answer == "blocked at output"
     assert response.sources == []
     assert response.confidence == 0.0
+
+
+def test_reranker_runs_unconditionally_without_feature_flags():
+
+    reranker = _StubReranker()
+    service = RAGService(reranker=reranker)
+    service.retriever = _StubRetriever()
+
+    service.ask("query", top_k=5)
+
+    assert reranker.called is True
+
+
+def test_feature_flag_disabled_skips_reranker_for_every_request():
+
+    flags = FeatureFlagManager()
+    flags.define(RERANKER_FLAG_NAME, enabled=False)
+    reranker = _StubReranker()
+    service = RAGService(reranker=reranker, feature_flags=flags)
+    service.retriever = _StubRetriever()
+
+    service.ask("query", top_k=5, client_id="user-1")
+
+    assert reranker.called is False
+
+
+def test_feature_flag_enabled_at_full_rollout_runs_reranker():
+
+    flags = FeatureFlagManager()
+    flags.define(RERANKER_FLAG_NAME, enabled=True, rollout_percentage=100.0)
+    reranker = _StubReranker()
+    service = RAGService(reranker=reranker, feature_flags=flags)
+    service.retriever = _StubRetriever()
+
+    service.ask("query", top_k=5, client_id="user-1")
+
+    assert reranker.called is True
+
+
+def test_missing_flag_definition_fails_open_to_reranker_enabled():
+
+    flags = FeatureFlagManager()  # RERANKER_FLAG_NAME never defined
+    reranker = _StubReranker()
+    service = RAGService(reranker=reranker, feature_flags=flags)
+    service.retriever = _StubRetriever()
+
+    service.ask("query", top_k=5, client_id="user-1")
+
+    assert reranker.called is True
+
+
+def test_same_client_id_gets_stable_canary_bucketing():
+
+    flags = FeatureFlagManager()
+    flags.define(RERANKER_FLAG_NAME, enabled=True, rollout_percentage=50.0)
+    service = RAGService(reranker=_StubReranker(), feature_flags=flags)
+
+    first = service._reranker_enabled_for("stable-client")
+    second = service._reranker_enabled_for("stable-client")
+
+    assert first == second

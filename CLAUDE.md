@@ -173,6 +173,16 @@ providers means passing a different instance into `RAGService.__init__`.
    exporter must not break the guardrail pipeline it's observing. No live Prometheus/Grafana
    server is set up or required by this repo.
 
+**Feature-flagged reranking:** `RAGService` optionally takes a `feature_flags:
+mlops.feature_flags.FeatureFlagManager | None`. When set, `_retrieve()` checks
+`is_enabled_for("cross_encoder_reranker", client_id)` per request before using the reranker (a
+missing flag definition fails open to "enabled" rather than silently disabling reranking for
+everyone); when `feature_flags` is `None` (the default when constructing `RAGService` directly),
+the reranker runs unconditionally whenever configured, exactly as before this existed. `client_id`
+is an optional field on `AskRequest`/param on `RAGService.ask()` used as the canary bucketing
+subject for stable per-caller rollout; a random id is used per-request when omitted (fine for an
+anonymous canary sample, just not sticky across requests from the same untracked caller).
+
 **Wiring:** `app/service_factory.py::build_rag_service()` reads `app/config.py::Settings` (from
 env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, `LLM_*`,
 `RERANKER_*`, etc.). `GENERATION_PROVIDER` accepts `extractive` (default) or `openai_compatible`
@@ -194,7 +204,25 @@ ML-backed guardrails: `PRESIDIO_PII_GUARD_ENABLED` / `PRESIDIO_SCORE_THRESHOLD` 
 `PRESIDIO_ENTITIES` (comma-separated), `NLI_HALLUCINATION_ENABLED` / `NLI_MODEL_NAME` /
 `NLI_THRESHOLD`, and `LLM_JUDGE_ENABLED` / `LLM_JUDGE_BASE_URL` / `LLM_JUDGE_API_KEY` /
 `LLM_JUDGE_MODEL_NAME` / `LLM_JUDGE_THRESHOLD` (base_url/api_key fall back to `LLM_BASE_URL`/
-`LLM_API_KEY` if unset).
+`LLM_API_KEY` if unset). `FEATURE_FLAGS_ENABLED` (default `true`) makes `build_rag_service()`
+attach a `FeatureFlagManager` with the `cross_encoder_reranker` flag pre-defined at
+`RERANKER_ROLLOUT_PERCENTAGE` (default `100`, i.e. unchanged behavior); `false` leaves
+`RAGService.feature_flags` as `None`.
+
+`app/main.py::build_platform_manager(settings)` builds the shared `mlops.manager.PlatformManager`
+for the live app (returns `None` when `MLOPS_ENABLED=false`) and is passed into
+`build_rag_service(settings, platform_manager=...)` so the app's `FeatureFlagManager` and the one
+admin endpoints operate on are the same instance - updating a flag via the API actually changes
+`/ask` behavior, not just a disconnected copy. When `SCHEDULER_ENABLED`, `main.py` registers a
+`backup` job (snapshots registry/artifacts/configuration/feature_flags to
+`SCHEDULER_BACKUP_DIR`, default `mlops_backups/`) and a `health_check` job (logs indexed chunk
+count) on `platform_manager.scheduler`, then drives `run_due_jobs()` from an `asyncio` task
+started in the FastAPI `lifespan` context manager every `SCHEDULER_INTERVAL_SECONDS` (default
+`300`) - this is the "whatever actually owns scheduling in a deployment" piece `Scheduler` itself
+deliberately doesn't provide. Admin endpoints: `GET /admin/feature-flags`, `PATCH
+/admin/feature-flags/{name}` (body: `enabled`?/`rollout_percentage`?), `GET
+/admin/scheduler/jobs`, `POST /admin/scheduler/jobs/{job_id}/trigger` (runs a job immediately via
+`Scheduler.trigger()`); all four 404 when `platform_manager` is `None`.
 
 Tests in `tests/unit/` mirror this structure one-to-one and mostly test each layer in isolation
 via real (non-mocked) local implementations, plus `test_api.py` for an end-to-end
@@ -265,23 +293,57 @@ automatically and exits `1` if any metric regressed (wire that exit code into CI
 gate). This is intentionally just a two-report diff, not a trend/dashboard system — see
 `ExperimentTracker` below.
 
-**Layers 2-4 (not implemented)** — `schemas.py` defines `GenerationMetric` (Layer 2: Groundedness/
-Faithfulness/Answer Relevance/Context Precision/Context Recall/RAGAS/LLM-as-a-Judge - scores one
-`(query, answer, retrieved_chunk_texts)` triple), `SystemMetricsCollector` (Layer 3: cost,
-throughput, memory, token usage, guardrail-specific rates beyond the retrieval latency Layer 1
-already measures directly), and `ExperimentTracker` (Layer 4: persisting/comparing reports across
-*many* runs for trend visualization, dashboards, CI/CD gating - beyond the single-baseline diff
-above) as `Protocol`s. None are implemented; a concrete implementation just needs to satisfy the
-Protocol shape and register itself - the runner, report format, and CLI don't change.
+**Layer 2 (generation quality)** — `generation_metrics.py` implements `GenerationMetric`:
+`GroundednessMetric` (token-overlap + optional embedding cosine, same scoring approach as
+`rag.guardrails.hallucination_detector.HallucinationDetector`, kept as an independent
+implementation rather than an import so evaluation stays standalone), `AnswerRelevanceMetric`
+(query/answer embedding cosine), `ContextRelevanceMetric` (query/chunk token overlap, reference-
+free), and `LLMJudgeGenerationMetric` (opt-in, reuses the `OpenAICompatibleAnswerer` client
+pattern; fails open by returning `NaN`, not `0.0`, so a judge outage drops that query from the
+aggregate mean instead of tanking it). RAGAS-style Context Precision/Recall are intentionally
+*not* duplicated here since Layer 1 already computes those against golden-dataset
+`relevant_chunk_ids` (`recall_at_k`/`precision_at_k`), a more reliable signal than judging chunk
+relevance from answer text alone. `EvaluationRunner` takes optional `answer_fn:
+(query, retrieved_chunk_ids) -> (answer, retrieved_chunk_texts)` and `generation_metrics:
+list[GenerationMetric]`; when both are set it also runs Layer 2 per query (sliced to
+`generation_top_k`, default `min(k_values)`) and folds results into `QueryEvaluation.answer`/
+`.generation_metrics` and `aggregate_metrics["generation/{name}"]` (NaN scores excluded from the
+mean, matching how `average_rank` excludes zero-hit queries rather than penalizing them).
+`BenchmarkConfig.generation_provider` (`None`/`"extractive"`/`"openai_compatible"`) wires this
+into `BenchmarkRunner` automatically; CLI flag `--generation extractive|openai_compatible`.
+
+**Layer 3 (system metrics)** — `system_metrics.py::DefaultSystemMetricsCollector.collect(report,
+run_duration_seconds=None, peak_memory_mb=None)` computes what's derivable from an
+`EvaluationReport` alone (query count, retrieval throughput, estimated completion tokens/cost from
+answer text length - documented as a lower bound since retrieved context text isn't retained on
+`QueryEvaluation`), plus `run_duration_seconds`/`peak_memory_mb` only when a caller supplies real
+measurements (CLI flag `--system-metrics` wraps the run in `tracemalloc` + a wall clock). Does
+**not** report a guardrail-trigger rate - `EvaluationRunner` never executes guardrails, so there's
+no real data to summarize; fabricating an always-zero metric would be worse than omitting it.
+
+**Layer 4 (experiment tracking)** — `experiment_tracker.py::LocalExperimentTracker` is an
+append-only JSON history file (`evaluation/reports/experiment_history.json` by default,
+gitignored) of trimmed `ExperimentRecord`s (metadata + `aggregate_metrics`, not full reports -
+those are already saved separately by `--json`/`--csv`). `record()`/`history()`/
+`trend_from_history()` read/write the file; `compare_many(reports)` (the `ExperimentTracker`
+Protocol method) builds the same `MetricTrend` shape directly from in-hand reports without
+touching the file. "Trend visualization" means a console table
+(`experiment_tracker.render_trend_table`) plus the raw `MetricTrend`/`MetricTrendPoint` data - no
+charting/dashboard dependency is added; something else can render that data if a real dashboard is
+ever wanted. CLI flags `--track` (record this run) / `--track-path` / `--trend N` (print a trend
+table over the last N tracked runs for this dataset).
 
 ## Operations & MLOps platform (`src/mlops/`)
 
-Standalone from the app - a provider-agnostic operational backbone (asset registries, lifecycle,
-config, feature flags, secrets, scheduling, governance, backup/recovery, RBAC), not wired into
-`RAGService`/`service_factory`. Nothing here sits in the request path; it's for managing the
-platform's own assets and operations. Every stateful component is in-memory by default and has
-no persistence unless explicitly backed up (`BackupManager`) - this is a library, not a service
-with its own database.
+A provider-agnostic operational backbone (asset registries, lifecycle, config, feature flags,
+secrets, scheduling, governance, backup/recovery, RBAC). Every stateful component is in-memory by
+default and has no persistence unless explicitly backed up (`BackupManager`) - this is a library,
+not a service with its own database. Registries/artifacts/lifecycle/governance stay standalone
+from the app (nothing in the request path writes to them yet - see per-section notes below for
+what a real caller would do with each). Feature flags and the scheduler *are* wired into the live
+app now - see "Wiring" and "Feature-flagged reranking" in the main Architecture section above for
+how `app/main.py`/`service_factory.py` share one `PlatformManager` instance with `RAGService` and
+the admin endpoints.
 
 **Architecture** — `manager.PlatformManager` is a thin facade composing the components below;
 each is equally usable standalone (`from mlops.registry import ModelRegistry` works with zero
@@ -333,9 +395,19 @@ be the only place a secret value ever touches application code.
 working reference implementation - `run_tests()`/`run_evaluation()` genuinely shell out to
 `pytest`/`evaluation/run_eval.py` via `subprocess`, proving the Protocol is actually usable, not
 just a paper interface; `deploy()` only logs intent (actually deploying is inherently
-provider-specific). GitHub Actions/Azure DevOps/Jenkins/GitLab CI adapters are **not
-implemented** - a real one would call that provider's REST API/CLI per stage but implement this
-exact same Protocol.
+provider-specific). `GitHubActionsDeploymentPipeline` implements the same Protocol against real
+GitHub Actions, driven entirely through the `gh` CLI (`workflow run` to dispatch, `run list`/`run
+view --json` to poll for the new run and its conclusion) rather than a raw REST client with its
+own token handling - reuses whatever `gh auth login` session or `GH_TOKEN`/`GITHUB_TOKEN` is
+already in the environment. Each stage maps to an independently configurable workflow file
+(`test_workflow`/`evaluation_workflow`/`experiment_workflow`/`deploy_workflow`); a stage left
+`None` is a soft no-op (same spirit as `LocalDeploymentPipeline.deploy()`'s placeholder) rather
+than forcing every repo to have all four workflows. Not verified against a real `gh` invocation in
+this repo (the sandbox this was built in doesn't have `gh` installed) - covered by mocked
+`subprocess.run` unit tests only; verify for real in an environment with `gh auth login` done
+before relying on it. Azure DevOps/Jenkins/GitLab CI adapters are still **not implemented** - a
+real one would call that provider's REST API/CLI per stage but implement this exact same
+Protocol.
 
 **Scheduler** — `scheduler.Scheduler` is a real job registry with interval-based due-job
 execution, deliberately with **no background thread of its own** - call `run_due_jobs(now)`
@@ -343,7 +415,9 @@ periodically from whatever actually owns scheduling in a deployment (a loop, a K
 CronJob, a GitHub Actions schedule trigger, cron itself). This keeps it dependency-free and
 testable with a fake clock instead of needing real sleeping/threading in tests. `trigger(job_id)`
 runs a job immediately, outside its schedule. Example jobs: re-index documents, run evaluation,
-health checks, drift detection, backup - register any zero-argument callable.
+health checks, drift detection, backup - register any zero-argument callable. The FastAPI app is
+one such "whatever actually owns scheduling" - see "Wiring" in the main Architecture section for
+the `asyncio`-task-in-`lifespan` loop and the two jobs it registers by default.
 
 **Drift & retraining (not implemented)** — `drift.DriftDetector` Protocol covers `DRIFT_TYPES`
 (data, embedding, retrieval, prompt, model, user_query); `retraining.RetrainingTrigger` +

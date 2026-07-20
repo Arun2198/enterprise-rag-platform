@@ -48,6 +48,9 @@ class Settings:
     secrets_enabled: bool = True
     drift_monitoring_enabled: bool = True
     scheduler_enabled: bool = True
+    reranker_rollout_percentage: float = 100.0
+    scheduler_interval_seconds: float = 300.0
+    scheduler_backup_dir: str = "mlops_backups"
 
 
 def load_settings() -> Settings:
@@ -112,4 +115,7 @@ def load_settings() -> Settings:
         secrets_enabled=_parse_bool(os.getenv("SECRETS_ENABLED", "true")),
         drift_monitoring_enabled=_parse_bool(os.getenv("DRIFT_MONITORING_ENABLED", "true")),
         scheduler_enabled=_parse_bool(os.getenv("SCHEDULER_ENABLED", "true")),
+        reranker_rollout_percentage=float(os.getenv("RERANKER_ROLLOUT_PERCENTAGE", "100")),
+        scheduler_interval_seconds=float(os.getenv("SCHEDULER_INTERVAL_SECONDS", "300")),
+        scheduler_backup_dir=os.getenv("SCHEDULER_BACKUP_DIR", "mlops_backups"),
     )

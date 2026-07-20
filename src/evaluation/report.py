@@ -52,8 +52,37 @@ def render_console(
     lines.append(
         f"P95 Retrieval Time: {report.retrieval_latency.p95_seconds * 1000:.1f} ms"
     )
+
+    generation_metrics = {
+        name: value for name, value in report.aggregate_metrics.items()
+        if name.startswith("generation/")
+    }
+
+    if generation_metrics:
+        lines.append("-" * 49)
+        lines.append("Generation quality (Layer 2):")
+
+        for name, value in sorted(generation_metrics.items()):
+            lines.append(f"  {name.removeprefix('generation/')}: {value:.4f}")
+
     lines.append("=" * 49)
 
+    return "\n".join(lines)
+
+
+def render_system_metrics(
+    metrics: dict[str, float]
+) -> str:
+    """Renders the dict returned by a SystemMetricsCollector (Layer 3)."""
+    if not metrics:
+        return ""
+
+    lines = ["=" * 49, "System metrics (Layer 3):", "-" * 49]
+
+    for name in sorted(metrics):
+        lines.append(f"  {name}: {metrics[name]:.4f}")
+
+    lines.append("=" * 49)
     return "\n".join(lines)
 
 
@@ -91,14 +120,22 @@ def render_csv(
 ) -> str:
     buffer = io.StringIO()
     metric_columns = sorted(report.query_evaluations[0].metrics) if report.query_evaluations else []
+    generation_columns = sorted(
+        {
+            name
+            for query_evaluation in report.query_evaluations
+            for name in query_evaluation.generation_metrics
+        }
+    )
     writer = csv.writer(buffer)
     writer.writerow(
         ["query_id", "query", "category", "difficulty", "retrieval_latency_seconds"]
         + metric_columns
+        + (["answer"] + generation_columns if generation_columns else [])
     )
 
     for query_evaluation in report.query_evaluations:
-        writer.writerow(
+        row = (
             [
                 query_evaluation.query_id,
                 query_evaluation.query,
@@ -108,6 +145,16 @@ def render_csv(
             ]
             + [f"{query_evaluation.metrics[column]:.4f}" for column in metric_columns]
         )
+
+        if generation_columns:
+            row.append(query_evaluation.answer or "")
+            row += [
+                f"{query_evaluation.generation_metrics[column]:.4f}"
+                if column in query_evaluation.generation_metrics else ""
+                for column in generation_columns
+            ]
+
+        writer.writerow(row)
 
     return buffer.getvalue()
 

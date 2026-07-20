@@ -54,6 +54,13 @@ class InMemoryVectorStore:
             reverse=True
         )[:top_k]
 
+    def get(
+        self,
+        chunk_id: str
+    ) -> Chunk | None:
+        record = self._records.get(chunk_id)
+        return record[0] if record else None
+
     def __len__(self) -> int:
         return len(self._records)
 

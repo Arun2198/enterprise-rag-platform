@@ -26,7 +26,13 @@ def _metadata(**overrides) -> ExperimentMetadata:
     return ExperimentMetadata(**defaults)
 
 
-def _build_report(retrieve_fn, k_values=(1, 5), dataset_name="test-dataset"):
+def _build_report(
+    retrieve_fn,
+    k_values=(1, 5),
+    dataset_name="test-dataset",
+    answer_fn=None,
+    generation_metrics=None
+):
     dataset = GoldenDataset(
         name=dataset_name,
         queries=[
@@ -34,8 +40,20 @@ def _build_report(retrieve_fn, k_values=(1, 5), dataset_name="test-dataset"):
             GoldenQuery(id="Q2", query="q2", relevant_chunk_ids=["b"], category="c", difficulty="hard")
         ]
     )
-    runner = EvaluationRunner(retrieve_fn=retrieve_fn, k_values=list(k_values))
+    runner = EvaluationRunner(
+        retrieve_fn=retrieve_fn,
+        k_values=list(k_values),
+        answer_fn=answer_fn,
+        generation_metrics=generation_metrics
+    )
     return runner.run(dataset, _metadata(dataset_name=dataset_name))
+
+
+class _FixedScoreMetric:
+    name = "fixed_metric"
+
+    def score(self, query, answer, retrieved_chunk_texts):
+        return 0.75
 
 
 def test_render_console_contains_key_sections():
@@ -132,6 +150,75 @@ def test_compare_reports_ignores_metrics_missing_from_baseline():
     metric_names = {delta.metric for delta in comparison.deltas}
     assert "recall@5" not in metric_names
     assert "recall@1" in metric_names
+
+
+def test_render_console_includes_generation_section_when_present():
+
+    evaluation_report = _build_report(
+        lambda query, top_k: ["a"],
+        answer_fn=lambda query, ids: ("an answer", ["context"]),
+        generation_metrics=[_FixedScoreMetric()]
+    )
+
+    text = report.render_console(evaluation_report)
+
+    assert "Generation quality (Layer 2)" in text
+    assert "fixed_metric: 0.7500" in text
+
+
+def test_render_console_omits_generation_section_when_absent():
+
+    evaluation_report = _build_report(lambda query, top_k: ["a"])
+
+    text = report.render_console(evaluation_report)
+
+    assert "Generation quality" not in text
+
+
+def test_render_csv_includes_answer_and_generation_columns():
+
+    evaluation_report = _build_report(
+        lambda query, top_k: ["a"],
+        answer_fn=lambda query, ids: ("an answer", ["context"]),
+        generation_metrics=[_FixedScoreMetric()]
+    )
+
+    csv_text = report.render_csv(evaluation_report)
+    lines = csv_text.strip().splitlines()
+
+    assert "answer" in lines[0]
+    assert "fixed_metric" in lines[0]
+    assert "an answer" in lines[1]
+
+
+def test_json_round_trip_preserves_generation_fields(tmp_path):
+
+    evaluation_report = _build_report(
+        lambda query, top_k: ["a"],
+        answer_fn=lambda query, ids: ("an answer", ["context"]),
+        generation_metrics=[_FixedScoreMetric()]
+    )
+
+    written_path = report.write_json_report(evaluation_report, str(tmp_path))
+    loaded = report.load_json_report(str(written_path))
+
+    assert loaded == evaluation_report
+    assert loaded.query_evaluations[0].answer == "an answer"
+    assert loaded.query_evaluations[0].generation_metrics["fixed_metric"] == 0.75
+
+
+def test_render_system_metrics_formats_sorted_lines():
+
+    text = report.render_system_metrics({"queries_evaluated": 3.0, "retrieval_throughput_qps": 12.5})
+
+    assert "System metrics (Layer 3)" in text
+    assert "queries_evaluated: 3.0000" in text
+    assert "retrieval_throughput_qps: 12.5000" in text
+
+
+def test_render_system_metrics_handles_empty_dict():
+
+    assert report.render_system_metrics({}) == ""
 
 
 def test_render_comparison_console_flags_regressions():

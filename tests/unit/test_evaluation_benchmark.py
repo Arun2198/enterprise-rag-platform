@@ -106,3 +106,48 @@ def test_render_comparison_table_includes_all_configs(tmp_path):
 def test_render_comparison_table_handles_empty_results():
 
     assert render_comparison_table([]) == "No benchmark results."
+
+
+def test_benchmark_runner_with_generation_populates_answers_and_generation_metrics(tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+
+    config = BenchmarkConfig(
+        label="with_generation",
+        chunk_size=60,
+        chunk_overlap=10,
+        minimum_chunk_size=5,
+        k_values=[1, 3],
+        generation_provider="extractive"
+    )
+    ((_, evaluation_report),) = runner.run([config])
+
+    query_evaluation = evaluation_report.query_evaluations[0]
+    assert query_evaluation.answer is not None
+    assert "groundedness" in query_evaluation.generation_metrics
+    assert "answer_relevance" in query_evaluation.generation_metrics
+    assert "context_relevance" in query_evaluation.generation_metrics
+    assert "generation/groundedness" in evaluation_report.aggregate_metrics
+    assert evaluation_report.metadata.generation_provider == "extractive"
+
+
+def test_benchmark_runner_openai_compatible_generation_requires_credentials(tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+
+    config = BenchmarkConfig(
+        label="missing_creds",
+        chunk_size=60,
+        chunk_overlap=10,
+        minimum_chunk_size=5,
+        k_values=[1, 3],
+        generation_provider="openai_compatible"
+    )
+
+    try:
+        runner.run([config])
+        assert False, "expected ValueError"
+    except ValueError as ex:
+        assert "llm_base_url" in str(ex)

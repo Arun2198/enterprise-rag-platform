@@ -31,6 +31,8 @@ class QueryEvaluation:
     retrieval_latency_seconds: float
     category: str | None = None
     difficulty: str | None = None
+    answer: str | None = None
+    generation_metrics: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -90,20 +92,66 @@ class RegressionComparison:
         return any(delta.is_regression for delta in self.deltas)
 
 
+@dataclass(frozen=True)
+class ExperimentRecord:
+    """
+    One tracked run in Layer 4's history - just enough of an
+    EvaluationReport to trend aggregate metrics over time and identify
+    what produced them. Not the full report (that's already saved
+    separately by --json/--csv per run); keeping this record small is
+    what makes an ever-growing history file stay cheap to read.
+    """
+    timestamp: str
+    dataset_name: str
+    git_commit_hash: str | None
+    embedding_provider: str
+    reranker: str | None
+    generation_provider: str | None
+    aggregate_metrics: dict[str, float]
+
+
+@dataclass(frozen=True)
+class MetricTrendPoint:
+    timestamp: str
+    value: float
+    git_commit_hash: str | None
+
+
+@dataclass(frozen=True)
+class MetricTrend:
+    metric: str
+    points: list[MetricTrendPoint]
+
+    @property
+    def latest(self) -> float | None:
+        return self.points[-1].value if self.points else None
+
+    @property
+    def delta_from_previous(self) -> float | None:
+        if len(self.points) < 2:
+            return None
+
+        return self.points[-1].value - self.points[-2].value
+
+
 # ---------------------------------------------------------------------------
-# Extension hooks for Layers 2-4. None of these are implemented - they exist
-# so those layers can be added later without changing the Layer 1 runner,
-# report format, or CLI. A concrete implementation registers by satisfying
-# the Protocol; nothing else needs to change.
+# Extension hooks for Layers 2-4, plus concrete implementations. A new
+# implementation just needs to satisfy the Protocol shape and get wired in
+# where its layer is used - the runner, report format, and CLI don't change.
 # ---------------------------------------------------------------------------
 
 
 class GenerationMetric(Protocol):
     """
-    Layer 2 (not implemented): scores a single (query, answer, context)
-    triple for generation quality. Concrete implementations - Groundedness,
-    Faithfulness, Answer Relevance, Context Precision, Context Recall,
-    RAGAS, LLM-as-a-Judge - would each implement this.
+    Layer 2: scores a single (query, answer, context) triple for generation
+    quality. Concrete implementations live in evaluation.generation_metrics -
+    GroundednessMetric, AnswerRelevanceMetric, ContextRelevanceMetric
+    (deterministic, no LLM call) and LLMJudgeGenerationMetric (opt-in,
+    reuses the OpenAI-compatible client pattern). RAGAS-style Context
+    Precision/Context Recall are intentionally not duplicated here - Layer 1
+    already computes those against the golden dataset's relevant_chunk_ids
+    (see metrics.recall_at_k/precision_at_k), which is a more reliable
+    signal than judging chunk relevance from answer text alone.
     """
     name: str
 
@@ -118,9 +166,10 @@ class GenerationMetric(Protocol):
 
 class SystemMetricsCollector(Protocol):
     """
-    Layer 3 (not implemented): collects system-level metrics for a run -
-    cost, throughput, memory, token usage, guardrail-specific rates -
-    beyond the retrieval latency Layer 1 already measures directly.
+    Layer 3: collects system-level metrics for a run - cost, throughput,
+    memory, token usage, guardrail-specific rates - beyond the retrieval
+    latency Layer 1 already measures directly. Concrete implementation:
+    evaluation.system_metrics.DefaultSystemMetricsCollector.
     """
     name: str
 
@@ -133,10 +182,13 @@ class SystemMetricsCollector(Protocol):
 
 class ExperimentTracker(Protocol):
     """
-    Layer 4 (not implemented): persists and compares EvaluationReports
-    across many runs for trend visualization, dashboards, or CI/CD
-    regression gating - beyond the single-baseline diff report.py already
-    supports (see evaluation.report.compare_reports).
+    Layer 4: persists and compares EvaluationReports across many runs for
+    trend visualization or CI/CD regression gating - beyond the
+    single-baseline diff report.py already supports (see
+    evaluation.report.compare_reports). Concrete implementation:
+    evaluation.experiment_tracker.LocalExperimentTracker (append-only JSON
+    history file, no dashboard/UI - see its docstring for what "trend
+    visualization" means here).
     """
 
     def record(

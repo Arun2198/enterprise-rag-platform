@@ -1,6 +1,10 @@
 from app.config import Settings
 from app.config import load_settings
+from app.services.rag_service import RERANKER_FLAG_NAME
 from app.services.rag_service import RAGService
+from mlops.backup import BackupManager
+from mlops.feature_flags import FeatureFlagManager
+from mlops.manager import PlatformManager
 from rag.embeddings.hashing_embedder import HashingEmbedder
 from rag.generation.openai_compatible_answerer import OpenAICompatibleAnswerer
 from rag.guardrails.base import Guardrail
@@ -20,7 +24,8 @@ class ServiceConfigurationError(ValueError):
 
 
 def build_rag_service(
-    settings: Settings | None = None
+    settings: Settings | None = None,
+    platform_manager: PlatformManager | None = None
 ) -> RAGService:
     settings = settings or load_settings()
 
@@ -70,7 +75,69 @@ def build_rag_service(
         answerer=answerer,
         reranker=reranker,
         candidate_multiplier=settings.reranker_candidate_multiplier,
+        feature_flags=_build_feature_flags(settings, platform_manager),
         guardrail_manager=_build_guardrail_manager(settings)
+    )
+
+
+def build_platform_manager(
+    settings: Settings | None = None
+) -> PlatformManager | None:
+    """
+    Builds the shared mlops backbone for the live app - just feature flags
+    and a scheduler with a default backup job for now (registry/artifacts/
+    lifecycle/governance stay available on the instance but nothing in the
+    app writes to them yet, same as before this wiring). Returns None when
+    MLOPS_ENABLED=false so callers can skip mlops entirely rather than
+    holding an inert instance.
+    """
+    settings = settings or load_settings()
+
+    if not settings.mlops_enabled:
+        return None
+
+    manager = PlatformManager(
+        backup=BackupManager(output_dir=settings.scheduler_backup_dir)
+    )
+
+    if settings.feature_flags_enabled:
+        _define_reranker_flag(manager.feature_flags, settings)
+
+    if settings.scheduler_enabled:
+        manager.scheduler.register(
+            job_id="backup",
+            name="Platform state backup",
+            interval_seconds=settings.scheduler_interval_seconds,
+            callable_=manager.create_backup
+        )
+
+    return manager
+
+
+def _build_feature_flags(
+    settings: Settings,
+    platform_manager: PlatformManager | None
+) -> FeatureFlagManager | None:
+    if not settings.feature_flags_enabled:
+        return None
+
+    manager = platform_manager.feature_flags if platform_manager is not None else FeatureFlagManager()
+    _define_reranker_flag(manager, settings)
+    return manager
+
+
+def _define_reranker_flag(
+    manager: FeatureFlagManager,
+    settings: Settings
+) -> None:
+    if any(flag.name == RERANKER_FLAG_NAME for flag in manager.list()):
+        return
+
+    manager.define(
+        RERANKER_FLAG_NAME,
+        enabled=True,
+        rollout_percentage=settings.reranker_rollout_percentage,
+        description="Percentage of /ask requests that get cross-encoder reranking"
     )
 
 

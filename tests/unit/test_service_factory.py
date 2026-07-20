@@ -4,8 +4,11 @@ import pytest
 
 from app.config import Settings
 from app.service_factory import ServiceConfigurationError
+from app.service_factory import build_platform_manager
 from app.service_factory import build_rag_service
+from app.services.rag_service import RERANKER_FLAG_NAME
 from app.services.rag_service import RAGService
+from mlops.manager import PlatformManager
 
 
 def test_build_rag_service_defaults_to_local_runtime():
@@ -235,3 +238,67 @@ def test_build_rag_service_requires_credentials_for_llm_judge():
 
     with pytest.raises(ServiceConfigurationError):
         build_rag_service(settings)
+
+
+def test_build_rag_service_has_no_feature_flags_when_disabled():
+
+    settings = Settings(feature_flags_enabled=False)
+
+    service = build_rag_service(settings)
+
+    assert service.feature_flags is None
+
+
+def test_build_rag_service_defines_reranker_flag_when_enabled():
+
+    settings = Settings(feature_flags_enabled=True, reranker_rollout_percentage=42.0)
+
+    service = build_rag_service(settings)
+
+    flag = service.feature_flags.get(RERANKER_FLAG_NAME)
+    assert flag.enabled is True
+    assert flag.rollout_percentage == 42.0
+
+
+def test_build_platform_manager_returns_none_when_mlops_disabled():
+
+    assert build_platform_manager(Settings(mlops_enabled=False)) is None
+
+
+def test_build_platform_manager_returns_instance_when_enabled():
+
+    manager = build_platform_manager(Settings(mlops_enabled=True))
+
+    assert isinstance(manager, PlatformManager)
+
+
+def test_build_platform_manager_registers_backup_job_when_scheduler_enabled():
+
+    manager = build_platform_manager(
+        Settings(mlops_enabled=True, scheduler_enabled=True)
+    )
+
+    job_ids = [job.job_id for job in manager.scheduler.list_jobs()]
+    assert "backup" in job_ids
+
+
+def test_build_platform_manager_skips_backup_job_when_scheduler_disabled():
+
+    manager = build_platform_manager(
+        Settings(mlops_enabled=True, scheduler_enabled=False)
+    )
+
+    assert manager.scheduler.list_jobs() == []
+
+
+def test_build_rag_service_shares_flags_from_platform_manager():
+
+    platform_manager = build_platform_manager(
+        Settings(mlops_enabled=True, feature_flags_enabled=True)
+    )
+    service = build_rag_service(
+        Settings(feature_flags_enabled=True),
+        platform_manager=platform_manager
+    )
+
+    assert service.feature_flags is platform_manager.feature_flags

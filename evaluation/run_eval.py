@@ -14,6 +14,8 @@ CLI entry point for the retrieval evaluation framework.
 import argparse
 import logging
 import sys
+import time
+import tracemalloc
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -24,7 +26,11 @@ from evaluation.benchmark import BenchmarkConfig  # noqa: E402
 from evaluation.benchmark import BenchmarkRunner  # noqa: E402
 from evaluation.dataset import DatasetValidationError  # noqa: E402
 from evaluation.dataset import load_dataset  # noqa: E402
+from evaluation.experiment_tracker import DEFAULT_HISTORY_PATH  # noqa: E402
+from evaluation.experiment_tracker import LocalExperimentTracker  # noqa: E402
+from evaluation.experiment_tracker import render_trend_table  # noqa: E402
 from evaluation.runner import DEFAULT_K_VALUES  # noqa: E402
+from evaluation.system_metrics import DefaultSystemMetricsCollector  # noqa: E402
 
 
 def parse_args(
@@ -56,6 +62,27 @@ def parse_args(
         help="Enable cross-encoder reranking"
     )
     parser.add_argument(
+        "--generation",
+        choices=["extractive", "openai_compatible"],
+        default=None,
+        help=(
+            "Enable Layer 2 generation-quality evaluation with this answerer. "
+            "openai_compatible reuses LLM_BASE_URL/LLM_API_KEY/LLM_MODEL_NAME "
+            "and also adds an LLM-judge quality metric."
+        )
+    )
+    parser.add_argument(
+        "--system-metrics",
+        action="store_true",
+        help="Collect Layer 3 system metrics (throughput, token/cost estimate, peak memory)"
+    )
+    parser.add_argument(
+        "--cost-per-1k-completion-tokens",
+        type=float,
+        default=0.0,
+        help="Used only with --system-metrics to estimate completion cost"
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Report output directory (default: EVALUATION_REPORT_DIR)"
@@ -72,6 +99,23 @@ def parse_args(
         type=float,
         default=report.DEFAULT_REGRESSION_THRESHOLD,
         help="Regression threshold as a fraction (default 0.02 = 2%%)"
+    )
+    parser.add_argument(
+        "--track",
+        action="store_true",
+        help="Record this run's aggregate metrics into the Layer 4 experiment history"
+    )
+    parser.add_argument(
+        "--track-path",
+        default=DEFAULT_HISTORY_PATH,
+        help="Path to the experiment history JSON file used by --track/--trend"
+    )
+    parser.add_argument(
+        "--trend",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Print a trend table over the last N tracked runs for this dataset"
     )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
@@ -100,12 +144,36 @@ def main(
         label=args.provider,
         embedder_name=args.provider,
         use_reranker=args.reranker,
-        k_values=k_values
+        k_values=k_values,
+        generation_provider=args.generation,
+        llm_base_url=settings.llm_base_url,
+        llm_api_key=settings.llm_api_key,
+        llm_model_name=settings.llm_model_name,
+        llm_timeout_seconds=settings.llm_timeout_seconds
     )
+
+    if args.system_metrics:
+        tracemalloc.start()
+        started_at = time.perf_counter()
 
     ((_, evaluation_report),) = BenchmarkRunner(dataset).run([config])
 
     print(report.render_console(evaluation_report))
+
+    if args.system_metrics:
+        run_duration_seconds = time.perf_counter() - started_at
+        _, peak_memory_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        collector = DefaultSystemMetricsCollector(
+            cost_per_1k_completion_tokens=args.cost_per_1k_completion_tokens
+        )
+        system_metrics = collector.collect(
+            evaluation_report,
+            run_duration_seconds=run_duration_seconds,
+            peak_memory_mb=peak_memory_bytes / (1024 * 1024)
+        )
+        print(report.render_system_metrics(system_metrics))
 
     output_dir = args.output or settings.evaluation_report_dir
     exit_code = 0
@@ -128,6 +196,17 @@ def main(
 
         if comparison.has_regressions:
             exit_code = 1
+
+    if args.track or args.trend is not None:
+        tracker = LocalExperimentTracker(path=args.track_path)
+
+        if args.track:
+            tracker.record(evaluation_report)
+
+        if args.trend is not None:
+            trends = tracker.trend_from_history(dataset.name, limit=args.trend)
+            print()
+            print(render_trend_table(trends))
 
     return exit_code
 

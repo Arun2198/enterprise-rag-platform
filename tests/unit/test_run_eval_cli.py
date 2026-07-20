@@ -82,6 +82,52 @@ def test_cli_missing_dataset_returns_error_exit_code():
     assert "error" in result.stderr.lower()
 
 
+def test_cli_generation_flag_prints_layer_2_section(tmp_path):
+
+    dataset_path = _build_dataset_file(tmp_path)
+
+    result = _run_cli(["--dataset", dataset_path, "--k", "1", "--generation", "extractive"])
+
+    assert result.returncode == 0
+    assert "Generation quality (Layer 2)" in result.stdout
+    assert "groundedness" in result.stdout
+
+
+def test_cli_system_metrics_flag_prints_layer_3_section(tmp_path):
+
+    dataset_path = _build_dataset_file(tmp_path)
+
+    result = _run_cli(["--dataset", dataset_path, "--k", "1", "--system-metrics"])
+
+    assert result.returncode == 0
+    assert "System metrics (Layer 3)" in result.stdout
+    assert "run_duration_seconds" in result.stdout
+
+
+def test_cli_track_and_trend_record_and_print_history(tmp_path):
+
+    dataset_path = _build_dataset_file(tmp_path)
+    history_path = tmp_path / "history.json"
+
+    first = _run_cli([
+        "--dataset", dataset_path, "--k", "1",
+        "--track", "--track-path", str(history_path)
+    ])
+    assert first.returncode == 0
+    assert history_path.exists()
+
+    second = _run_cli([
+        "--dataset", dataset_path, "--k", "1",
+        "--track", "--track-path", str(history_path),
+        "--trend", "5"
+    ])
+
+    assert second.returncode == 0
+    assert "recall@1" in second.stdout
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert len(history) == 2
+
+
 def test_cli_baseline_comparison_reports_no_regression_for_identical_runs(tmp_path):
 
     dataset_path = _build_dataset_file(tmp_path)

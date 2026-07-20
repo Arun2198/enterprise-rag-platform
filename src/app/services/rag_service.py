@@ -1,7 +1,10 @@
+import uuid
+
 from app.schemas import AskResponse
 from app.schemas import IngestResponse
 from app.schemas import Source
 from ingestion.ingestion_pipeline import IngestionPipeline
+from mlops.feature_flags import FeatureFlagManager
 from rag.chunking.recursive_chunker import RecursiveChunker
 from rag.embeddings.base import Embedder
 from rag.embeddings.hashing_embedder import HashingEmbedder
@@ -15,6 +18,8 @@ from rag.retrieval.reranker import CrossEncoderReranker
 from rag.vector_store.base import VectorStore
 from rag.vector_store.in_memory_store import InMemoryVectorStore
 
+RERANKER_FLAG_NAME = "cross_encoder_reranker"
+
 
 class RAGService:
 
@@ -27,6 +32,7 @@ class RAGService:
         answerer: Answerer | None = None,
         reranker: CrossEncoderReranker | None = None,
         candidate_multiplier: int = 4,
+        feature_flags: FeatureFlagManager | None = None,
         guardrail_manager: GuardrailManager | None = None,
         guardrails_enabled: bool = True,
         pii_guard_enabled: bool = True,
@@ -40,6 +46,7 @@ class RAGService:
         self.answerer = answerer or ExtractiveAnswerer()
         self.reranker = reranker
         self.candidate_multiplier = candidate_multiplier
+        self.feature_flags = feature_flags
         self.guardrail_manager = guardrail_manager or (
             GuardrailManager.default(
                 embedder=self.embedder,
@@ -93,7 +100,8 @@ class RAGService:
     def ask(
         self,
         query: str,
-        top_k: int = 5
+        top_k: int = 5,
+        client_id: str | None = None
     ) -> AskResponse:
         input_result = self.guardrail_manager.run_input(query)
 
@@ -108,7 +116,8 @@ class RAGService:
         query = input_result.text
         retrieved = self._retrieve(
             query=query,
-            top_k=top_k
+            top_k=top_k,
+            client_id=client_id
         )
         answer = self.answerer.answer(
             query=query,
@@ -155,9 +164,10 @@ class RAGService:
     def _retrieve(
         self,
         query: str,
-        top_k: int
+        top_k: int,
+        client_id: str | None = None
     ) -> list[RetrievedChunk]:
-        if self.reranker is None:
+        if self.reranker is None or not self._reranker_enabled_for(client_id):
             return self.retriever.retrieve(
                 query=query,
                 top_k=top_k
@@ -172,6 +182,30 @@ class RAGService:
             candidates=candidates,
             top_k=top_k
         )
+
+    def _reranker_enabled_for(
+        self,
+        client_id: str | None
+    ) -> bool:
+        """
+        When no FeatureFlagManager is wired in (the default), the reranker
+        is used unconditionally whenever configured - unchanged from
+        before feature flags existed. When one is wired in (via
+        service_factory, FEATURE_FLAGS_ENABLED=true) and no flag by this
+        name has been defined yet, that's a caller error rather than a
+        silent full rollout - fail open to "reranker enabled" so a missing
+        flag definition can't quietly regress retrieval quality for
+        everyone.
+        """
+        if self.feature_flags is None:
+            return True
+
+        subject_id = client_id or str(uuid.uuid4())
+
+        try:
+            return self.feature_flags.is_enabled_for(RERANKER_FLAG_NAME, subject_id)
+        except KeyError:
+            return True
 
     def _format_error(
         self,
