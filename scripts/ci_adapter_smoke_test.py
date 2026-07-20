@@ -20,8 +20,11 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
-from mlops.deployment import GitHubActionsDeploymentPipeline
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from mlops.deployment import GitHubActionsDeploymentPipeline  # noqa: E402
 
 DEFAULT_REPO = "Arun2198/enterprise-rag-platform"
 DEFAULT_WORKFLOW = "llm-e2e-smoke-test.yml"
