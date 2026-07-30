@@ -11,6 +11,7 @@ class Settings:
     vector_store_provider: str = "memory"
     embedding_provider: str = "hashing"
     generation_provider: str = "extractive"
+    generation_fallback_provider: str | None = None
     opensearch_host: str | None = None
     opensearch_index: str = "enterprise-rag-chunks"
     aws_region: str = "us-east-1"
@@ -58,6 +59,7 @@ def load_settings() -> Settings:
         vector_store_provider=os.getenv("VECTOR_STORE_PROVIDER", "memory"),
         embedding_provider=os.getenv("EMBEDDING_PROVIDER", "hashing"),
         generation_provider=os.getenv("GENERATION_PROVIDER", "extractive"),
+        generation_fallback_provider=os.getenv("GENERATION_FALLBACK_PROVIDER"),
         opensearch_host=os.getenv("OPENSEARCH_HOST"),
         opensearch_index=os.getenv("OPENSEARCH_INDEX", "enterprise-rag-chunks"),
         aws_region=os.getenv("AWS_REGION", "us-east-1"),

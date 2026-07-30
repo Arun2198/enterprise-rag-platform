@@ -61,6 +61,7 @@ jobs:
             [
               {"name": "RERANKER_ENABLED", "value": "false"},
               {"name": "GENERATION_PROVIDER", "value": "${{ vars.GENERATION_PROVIDER }}"},
+              {"name": "GENERATION_FALLBACK_PROVIDER", "value": "${{ vars.GENERATION_FALLBACK_PROVIDER }}"},
               {"name": "AWS_REGION", "value": "${{ env.AWS_REGION }}"},
               {"name": "BEDROCK_MODEL_ID", "value": "arn:aws:bedrock:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0"},
               {"name": "LLM_BASE_URL", "value": "https://models.github.ai/inference"},

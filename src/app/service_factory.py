@@ -8,7 +8,10 @@ from mlops.backup import BackupManager
 from mlops.feature_flags import FeatureFlagManager
 from mlops.manager import PlatformManager
 from rag.embeddings.hashing_embedder import HashingEmbedder
+from rag.generation.base import Answerer
 from rag.generation.bedrock_answerer import BedrockAnswerer
+from rag.generation.extractive_answerer import ExtractiveAnswerer
+from rag.generation.fallback_answerer import FallbackAnswerer
 from rag.generation.openai_compatible_answerer import OpenAICompatibleAnswerer
 from rag.guardrails.base import Guardrail
 from rag.guardrails.hallucination_detector import HallucinationDetector
@@ -44,37 +47,13 @@ def build_rag_service(
             "Only EMBEDDING_PROVIDER=hashing is wired for local runtime."
         )
 
-    if settings.generation_provider not in WIRED_GENERATION_PROVIDERS:
-        raise ServiceConfigurationError(
-            "Only GENERATION_PROVIDER=extractive, openai_compatible, or bedrock "
-            "are wired for local runtime."
+    answerer = _build_answerer(settings.generation_provider, settings, "GENERATION_PROVIDER")
+
+    if settings.generation_fallback_provider:
+        fallback_answerer = _build_answerer(
+            settings.generation_fallback_provider, settings, "GENERATION_FALLBACK_PROVIDER"
         )
-
-    answerer = None
-
-    if settings.generation_provider == "openai_compatible":
-        if not settings.llm_base_url or not settings.llm_api_key:
-            raise ServiceConfigurationError(
-                "GENERATION_PROVIDER=openai_compatible requires LLM_BASE_URL "
-                "and LLM_API_KEY to be set."
-            )
-
-        answerer = OpenAICompatibleAnswerer(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-            model_name=settings.llm_model_name,
-            timeout=settings.llm_timeout_seconds,
-            max_tokens=settings.llm_max_tokens,
-            temperature=settings.llm_temperature
-        )
-
-    if settings.generation_provider == "bedrock":
-        answerer = BedrockAnswerer(
-            client=boto3.client("bedrock-runtime", region_name=settings.aws_region),
-            model_id=settings.bedrock_model_id,
-            max_tokens=settings.llm_max_tokens,
-            temperature=settings.llm_temperature
-        )
+        answerer = FallbackAnswerer(primary=answerer, fallback=fallback_answerer)
 
     reranker = None
 
@@ -87,6 +66,43 @@ def build_rag_service(
         candidate_multiplier=settings.reranker_candidate_multiplier,
         feature_flags=_build_feature_flags(settings, platform_manager),
         guardrail_manager=_build_guardrail_manager(settings)
+    )
+
+
+def _build_answerer(
+    provider: str,
+    settings: Settings,
+    env_var_name: str
+) -> Answerer:
+    if provider not in WIRED_GENERATION_PROVIDERS:
+        raise ServiceConfigurationError(
+            f"{env_var_name} must be one of {WIRED_GENERATION_PROVIDERS}, got {provider!r}."
+        )
+
+    if provider == "extractive":
+        return ExtractiveAnswerer()
+
+    if provider == "openai_compatible":
+        if not settings.llm_base_url or not settings.llm_api_key:
+            raise ServiceConfigurationError(
+                f"{env_var_name}=openai_compatible requires LLM_BASE_URL "
+                "and LLM_API_KEY to be set."
+            )
+
+        return OpenAICompatibleAnswerer(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            model_name=settings.llm_model_name,
+            timeout=settings.llm_timeout_seconds,
+            max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature
+        )
+
+    return BedrockAnswerer(
+        client=boto3.client("bedrock-runtime", region_name=settings.aws_region),
+        model_id=settings.bedrock_model_id,
+        max_tokens=settings.llm_max_tokens,
+        temperature=settings.llm_temperature
     )
 
 

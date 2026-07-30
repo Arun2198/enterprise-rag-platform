@@ -103,7 +103,15 @@ providers means passing a different instance into `RAGService.__init__`.
    changing only those config values — no code changes. It returns a fixed fallback string
    without calling the LLM when there are no retrieved chunks, retries only transient failures
    (HTTP 429/500/502/503/504) with exponential backoff, and returns a fallback string on
-   exhausted/non-retryable failures instead of raising.
+   exhausted/non-retryable failures instead of raising. `FallbackAnswerer` wraps any two
+   `Answerer` instances - tries the primary, and on *any* exception from it (Bedrock throttling,
+   an AWS Marketplace billing/subscription error, a network failure, whatever) falls back to the
+   secondary rather than surfacing a 500 to the caller. It's generic composition over the
+   `Answerer` Protocol with no knowledge of which concrete providers it wraps. Wired via
+   `GENERATION_FALLBACK_PROVIDER` (same allowed values as `GENERATION_PROVIDER`) - when set,
+   `service_factory.build_rag_service()` builds a second answerer for that value and wraps the
+   primary in `FallbackAnswerer`; when unset (the default), `RAGService.answerer` is just the
+   primary provider, unchanged from before this existed.
 8. **Guardrails** (`src/rag/guardrails/`) — every `Guardrail` (`base.py`) implements one
    `check(context) -> GuardrailFinding` method and declares a `stage` (`INPUT` or `OUTPUT`).
    `GuardrailManager` (`manager.py`) runs the guardrails registered for a given stage, applies any

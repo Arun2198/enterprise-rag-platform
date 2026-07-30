@@ -80,6 +80,78 @@ def test_build_rag_service_wires_bedrock_provider(mock_boto3, mock_answerer_clas
     )
 
 
+@patch("app.service_factory.BedrockAnswerer")
+@patch("app.service_factory.boto3")
+def test_build_rag_service_wires_fallback_answerer_when_configured(mock_boto3, mock_answerer_class):
+
+    settings = Settings(
+        generation_provider="bedrock",
+        generation_fallback_provider="extractive",
+        aws_region="us-west-2",
+        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0"
+    )
+
+    service = build_rag_service(settings)
+
+    from rag.generation.extractive_answerer import ExtractiveAnswerer
+    from rag.generation.fallback_answerer import FallbackAnswerer
+
+    assert isinstance(service.answerer, FallbackAnswerer)
+    assert service.answerer.primary is mock_answerer_class.return_value
+    assert isinstance(service.answerer.fallback, ExtractiveAnswerer)
+
+
+def test_build_rag_service_has_no_fallback_by_default():
+
+    settings = Settings(generation_provider="extractive")
+
+    service = build_rag_service(settings)
+
+    from rag.generation.fallback_answerer import FallbackAnswerer
+
+    assert not isinstance(service.answerer, FallbackAnswerer)
+
+
+@patch("app.service_factory.OpenAICompatibleAnswerer")
+def test_build_rag_service_wires_openai_compatible_as_fallback(mock_answerer_class):
+
+    settings = Settings(
+        generation_provider="extractive",
+        generation_fallback_provider="openai_compatible",
+        llm_base_url="https://models.github.ai/inference",
+        llm_api_key="key"
+    )
+
+    service = build_rag_service(settings)
+
+    from rag.generation.fallback_answerer import FallbackAnswerer
+
+    assert isinstance(service.answerer, FallbackAnswerer)
+    assert service.answerer.fallback is mock_answerer_class.return_value
+
+
+def test_build_rag_service_requires_llm_credentials_for_openai_compatible_fallback():
+
+    settings = Settings(
+        generation_provider="extractive",
+        generation_fallback_provider="openai_compatible"
+    )
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
+def test_build_rag_service_rejects_unwired_fallback_provider():
+
+    settings = Settings(
+        generation_provider="extractive",
+        generation_fallback_provider="not_a_real_provider"
+    )
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
 def test_build_rag_service_disables_reranking_when_reranker_disabled():
 
     settings = Settings(reranker_enabled=False)
