@@ -6,6 +6,7 @@ RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock ./
 COPY src/ src/
+COPY sample_documents/ sample_documents/
 
 RUN uv sync --frozen
 
