@@ -9,7 +9,9 @@ def _parse_bool(value: str) -> bool:
 @dataclass(frozen=True)
 class Settings:
     vector_store_provider: str = "memory"
-    embedding_provider: str = "hashing"
+    embedding_provider: str = "sentence_transformer"
+    embedding_model_name: str = "BAAI/bge-base-en-v1.5"
+    ingest_allowed_dir: str = "sample_documents"
     generation_provider: str = "extractive"
     generation_fallback_provider: str | None = None
     opensearch_host: str | None = None
@@ -57,7 +59,9 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         vector_store_provider=os.getenv("VECTOR_STORE_PROVIDER", "memory"),
-        embedding_provider=os.getenv("EMBEDDING_PROVIDER", "hashing"),
+        embedding_provider=os.getenv("EMBEDDING_PROVIDER", "sentence_transformer"),
+        embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-base-en-v1.5"),
+        ingest_allowed_dir=os.getenv("INGEST_ALLOWED_DIR", "sample_documents"),
         generation_provider=os.getenv("GENERATION_PROVIDER", "extractive"),
         generation_fallback_provider=os.getenv("GENERATION_FALLBACK_PROVIDER"),
         opensearch_host=os.getenv("OPENSEARCH_HOST"),

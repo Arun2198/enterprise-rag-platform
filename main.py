@@ -4,11 +4,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from app.services.rag_service import RAGService
+from app.config import load_settings
+from app.service_factory import build_rag_service
 
 
 def main():
-    service = RAGService()
+    # goes through the real factory rather than a bare RAGService() so the
+    # demo run uses the same quality embedding model (and guardrails,
+    # reranker) as the deployed app - never the hashing baseline
+    service = build_rag_service(load_settings())
     ingest_response = service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"])
 
     print(f"Indexed documents: {ingest_response.indexed_documents}")

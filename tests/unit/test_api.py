@@ -1,9 +1,12 @@
 import asyncio
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import app.main as main_module
 from app.main import app
 from app.main import lifespan
+from app.main import rag_service
 
 
 def test_health_endpoint():
@@ -16,7 +19,73 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
-def test_ingest_and_ask_endpoints(tmp_path):
+def test_health_reports_503_when_startup_failed(monkeypatch):
+
+    monkeypatch.setattr(main_module, "startup_error", "RuntimeError: model download failed")
+    client = TestClient(app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert "model download failed" in response.json()["detail"]
+
+
+def test_ingest_returns_503_when_rag_service_failed_to_initialize(monkeypatch):
+
+    monkeypatch.setattr(main_module, "rag_service", None)
+    monkeypatch.setattr(main_module, "startup_error", "RuntimeError: model download failed")
+    client = TestClient(app)
+
+    response = client.post("/ingest", json={"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"]})
+
+    assert response.status_code == 503
+    assert "model download failed" in response.json()["detail"]
+
+
+def test_ask_returns_503_when_rag_service_failed_to_initialize(monkeypatch):
+
+    monkeypatch.setattr(main_module, "rag_service", None)
+    monkeypatch.setattr(main_module, "startup_error", "RuntimeError: model download failed")
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "anything"})
+
+    assert response.status_code == 503
+    assert "model download failed" in response.json()["detail"]
+
+
+def test_admin_endpoints_report_the_real_failure_reason_not_a_generic_disabled_message(monkeypatch):
+
+    monkeypatch.setattr(main_module, "platform_manager", None)
+    monkeypatch.setattr(main_module, "startup_error", "RuntimeError: model download failed")
+    client = TestClient(app)
+
+    response = client.get("/admin/feature-flags")
+
+    assert response.status_code == 404
+    assert "model download failed" in response.json()["detail"]
+    assert "MLOPS_ENABLED=false" not in response.json()["detail"]
+
+
+def test_admin_endpoints_still_report_disabled_when_mlops_was_never_enabled(monkeypatch):
+
+    monkeypatch.setattr(main_module, "platform_manager", None)
+    monkeypatch.setattr(main_module, "startup_error", None)
+    client = TestClient(app)
+
+    response = client.get("/admin/feature-flags")
+
+    assert response.status_code == 404
+    assert "MLOPS_ENABLED=false" in response.json()["detail"]
+
+
+def test_ingest_and_ask_endpoints(tmp_path, monkeypatch):
+
+    # the live rag_service restricts /ingest to a configured directory
+    # (see test_rag_service.py for the security tests) - point that
+    # restriction at tmp_path for this test so it still exercises the
+    # real, restricted code path rather than bypassing it
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
 
     file_path = tmp_path / "leave_policy.md"
     file_path.write_text(
@@ -48,7 +117,9 @@ def test_ingest_and_ask_endpoints(tmp_path):
     assert "groundedness" in guardrail_flags
 
 
-def test_ask_accepts_optional_client_id(tmp_path):
+def test_ask_accepts_optional_client_id(tmp_path, monkeypatch):
+
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
 
     file_path = tmp_path / "policy.md"
     file_path.write_text("Some policy content for the client id test.", encoding="utf-8")
@@ -61,6 +132,20 @@ def test_ask_accepts_optional_client_id(tmp_path):
     )
 
     assert response.status_code == 200
+
+
+def test_ingest_endpoint_rejects_a_path_outside_the_allowed_directory(tmp_path):
+
+    outside_file = tmp_path / "secret.md"
+    outside_file.write_text("# Secret\nShould never be readable via the API.", encoding="utf-8")
+    client = TestClient(app)
+
+    response = client.post("/ingest", json={"file_paths": [str(outside_file)]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["indexed_documents"] == 0
+    assert "PATH_NOT_ALLOWED" in body["errors"][0]
 
 
 def test_admin_feature_flags_lists_the_reranker_flag():

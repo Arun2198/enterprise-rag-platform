@@ -7,7 +7,9 @@ from app.services.rag_service import RAGService
 from mlops.backup import BackupManager
 from mlops.feature_flags import FeatureFlagManager
 from mlops.manager import PlatformManager
+from rag.embeddings.base import Embedder
 from rag.embeddings.hashing_embedder import HashingEmbedder
+from rag.embeddings.sentence_transformer_embedder import SentenceTransformerEmbedder
 from rag.generation.base import Answerer
 from rag.generation.bedrock_answerer import BedrockAnswerer
 from rag.generation.extractive_answerer import ExtractiveAnswerer
@@ -23,6 +25,7 @@ from rag.guardrails.presidio_pii_guard import PresidioPIIGuard
 from rag.retrieval.reranker import CrossEncoderReranker
 
 WIRED_GENERATION_PROVIDERS = ("extractive", "openai_compatible", "bedrock")
+WIRED_EMBEDDING_PROVIDERS = ("hashing", "sentence_transformer")
 
 
 class ServiceConfigurationError(ValueError):
@@ -42,11 +45,7 @@ def build_rag_service(
             "authenticated OpenSearch client."
         )
 
-    if settings.embedding_provider != "hashing":
-        raise ServiceConfigurationError(
-            "Only EMBEDDING_PROVIDER=hashing is wired for local runtime."
-        )
-
+    embedder = _build_embedder(settings)
     answerer = _build_answerer(settings.generation_provider, settings, "GENERATION_PROVIDER")
 
     if settings.generation_fallback_provider:
@@ -61,12 +60,29 @@ def build_rag_service(
         reranker = CrossEncoderReranker(model_name=settings.reranker_model_name)
 
     return RAGService(
+        embedder=embedder,
         answerer=answerer,
         reranker=reranker,
         candidate_multiplier=settings.reranker_candidate_multiplier,
         feature_flags=_build_feature_flags(settings, platform_manager),
-        guardrail_manager=_build_guardrail_manager(settings)
+        guardrail_manager=_build_guardrail_manager(settings, embedder),
+        ingest_allowed_dir=settings.ingest_allowed_dir
     )
+
+
+def _build_embedder(
+    settings: Settings
+) -> Embedder:
+    if settings.embedding_provider not in WIRED_EMBEDDING_PROVIDERS:
+        raise ServiceConfigurationError(
+            f"EMBEDDING_PROVIDER must be one of {WIRED_EMBEDDING_PROVIDERS}, "
+            f"got {settings.embedding_provider!r}."
+        )
+
+    if settings.embedding_provider == "hashing":
+        return HashingEmbedder()
+
+    return SentenceTransformerEmbedder(model_name=settings.embedding_model_name)
 
 
 def _build_answerer(
@@ -168,7 +184,8 @@ def _define_reranker_flag(
 
 
 def _build_guardrail_manager(
-    settings: Settings
+    settings: Settings,
+    embedder: Embedder
 ) -> GuardrailManager:
     if not settings.guardrails_enabled:
         return GuardrailManager(guardrails=[])
@@ -190,7 +207,7 @@ def _build_guardrail_manager(
         guardrails.append(
             HallucinationDetector(
                 threshold=settings.groundedness_threshold,
-                embedder=HashingEmbedder()
+                embedder=embedder
             )
         )
 

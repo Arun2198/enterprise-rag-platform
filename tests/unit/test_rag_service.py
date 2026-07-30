@@ -55,6 +55,87 @@ def test_rag_service_ingests_and_answers_from_markdown(tmp_path):
     assert ask_response.sources
 
 
+def test_ingest_allows_any_path_when_no_allowed_dir_configured(tmp_path):
+
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("# Notes\nSome content here for the pipeline.", encoding="utf-8")
+    service = RAGService()
+
+    response = service.ingest([str(file_path)])
+
+    assert response.indexed_documents == 1
+    assert response.errors == []
+
+
+def test_ingest_allows_files_inside_the_configured_directory(tmp_path):
+
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    file_path = allowed_dir / "notes.md"
+    file_path.write_text("# Notes\nSome content here for the pipeline.", encoding="utf-8")
+    service = RAGService(ingest_allowed_dir=str(allowed_dir))
+
+    response = service.ingest([str(file_path)])
+
+    assert response.indexed_documents == 1
+    assert response.errors == []
+
+
+def test_ingest_rejects_a_path_outside_the_configured_directory(tmp_path):
+
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    outside_file = tmp_path / "secret.md"
+    outside_file.write_text("# Secret\nShould never be readable via ingest.", encoding="utf-8")
+    service = RAGService(ingest_allowed_dir=str(allowed_dir))
+
+    response = service.ingest([str(outside_file)])
+
+    assert response.indexed_documents == 0
+    assert response.indexed_chunks == 0
+    assert "PATH_NOT_ALLOWED" in response.errors[0]
+
+
+def test_ingest_rejects_a_traversal_path_that_escapes_the_allowed_directory(tmp_path):
+
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    outside_file = tmp_path / "secret.md"
+    outside_file.write_text("# Secret\nShould never be readable via ingest.", encoding="utf-8")
+    service = RAGService(ingest_allowed_dir=str(allowed_dir))
+
+    traversal_path = str(allowed_dir / ".." / "secret.md")
+    response = service.ingest([traversal_path])
+
+    assert response.indexed_documents == 0
+    assert "PATH_NOT_ALLOWED" in response.errors[0]
+
+
+def test_ingest_rejects_an_absolute_path_outside_the_allowed_directory(tmp_path):
+
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    service = RAGService(ingest_allowed_dir=str(allowed_dir))
+
+    response = service.ingest(["/etc/passwd"])
+
+    assert response.indexed_documents == 0
+    assert "PATH_NOT_ALLOWED" in response.errors[0]
+
+
+def test_ingest_allows_a_file_directly_at_the_allowed_directory_root(tmp_path):
+
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    file_path = allowed_dir / "root.md"
+    file_path.write_text("# Root\nContent directly in the allowed directory.", encoding="utf-8")
+    service = RAGService(ingest_allowed_dir=str(allowed_dir))
+
+    response = service.ingest([str(file_path)])
+
+    assert response.indexed_documents == 1
+
+
 def test_ask_bypasses_reranking_when_no_reranker_configured():
 
     class StubRetriever:

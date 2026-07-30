@@ -56,16 +56,48 @@ providers means passing a different instance into `RAGService.__init__`.
    `Document`, then normalizes whitespace via `TextCleaner`. Every parser and pipeline stage
    returns a `Result[T]` (success/data/error) instead of raising — errors carry a `code` +
    `message` and are surfaced up through `RAGService.ingest()` as strings in
-   `IngestResponse.errors`, never as exceptions.
+   `IngestResponse.errors`, never as exceptions. `RAGService.ingest_allowed_dir` (optional,
+   `None` = unrestricted) gates which paths `ingest()` will even hand to the pipeline - resolves
+   symlinks/`..` segments and requires the result to sit inside that directory, rejecting anything
+   outside with a `PATH_NOT_ALLOWED` error instead of reading it. `None` by default (direct
+   construction - tests, `main.py`'s demo run - stays unrestricted); `service_factory
+   .build_rag_service()` always sets it from `INGEST_ALLOWED_DIR` (default `sample_documents`) for
+   the live API, since `/ingest` takes attacker-controlled paths over an unauthenticated HTTP
+   endpoint and previously had zero path validation - `{"file_paths": ["CLAUDE.md"]}` or any other
+   `.pdf`/`.docx`/`.md` file reachable inside the container would get indexed and readable back via
+   `/ask`.
 2. **Chunking** (`src/rag/chunking/recursive_chunker.py`) — `RecursiveChunker` splits a
    `Document` into `Chunk`s: first by heading-like lines (`_looks_like_heading`), then within each
    section by sentence boundaries up to `chunk_size` with `chunk_overlap`, merging any resulting
    chunk under `minimum_chunk_size` into its neighbor. Chunk metadata carries the parent section
-   title and document metadata forward.
-3. **Embedding** (`src/rag/embeddings/`) — `Embedder` protocol. Default is `HashingEmbedder`, a
-   deterministic hash-based bag-of-tokens embedding (no external model/credentials needed, keeps
-   the MVP runnable offline). `SentenceTransformerEmbedder` is a real local-model alternative
-   (BAAI/bge-small-en-v1.5), not wired into `service_factory`.
+   title and document metadata forward. `_split_sections` only closes a section once it has real
+   body content beyond just the heading line itself - a run of consecutive heading-like lines (a
+   table of contents, repeated running headers/footers from PDF extraction) keeps accumulating
+   into the same pending section instead of each becoming its own near-empty chunk. Without this,
+   every TOC entry ("Attributes of the AI RMF 3", page number and all) becomes a standalone
+   one-line chunk that can outrank real content on an exact-phrase query, since it IS that exact
+   phrase - a real, previously-shipped bug that was silently gutting retrieval quality on
+   `sample_documents/AI-RMF-1stdraft.pdf` (209 chunks before the fix, 148 after, `evaluation/
+   golden_dataset.json` was rebuilt against the corrected output).
+3. **Embedding** (`src/rag/embeddings/`) — `Embedder` protocol. `SentenceTransformerEmbedder`
+   (real local model, default `BAAI/bge-base-en-v1.5`, configurable via `EMBEDDING_MODEL_NAME`) is
+   the default (`EMBEDDING_PROVIDER=sentence_transformer`) - a deterministic hash-based embedding
+   is not good enough to be what the live app silently falls back to. `HashingEmbedder` (no
+   external model/credentials, zero network dependency) is still available via
+   `EMBEDDING_PROVIDER=hashing`, and remains `RAGService.__init__`'s own bare-construction default
+   (direct `RAGService()` calls - tests, scripts) precisely so the test suite stays fast and
+   offline; `tests/unit/conftest.py` globally patches `SentenceTransformer` with a fake that
+   delegates to `HashingEmbedder` internally, so anything going through
+   `service_factory.build_rag_service()` in a test - including `app.main`'s module-level call -
+   never downloads a real model either, while still getting deterministic, content-sensitive
+   embeddings for retrieval-ranking assertions to depend on. `main.py`'s demo script goes through
+   `build_rag_service()` rather than a bare `RAGService()` for this same reason - it should show
+   the same embedding quality as the deployed app, not the offline fallback.
+   `SentenceTransformerEmbedder` loads the model once at construction and reuses it for every
+   call. `service_factory.build_rag_service()` builds this embedder once and shares the same
+   instance between retrieval and `HallucinationDetector` (when enabled), rather than each
+   independently constructing its own - keeps
+   groundedness scoring consistent with whatever embedding space retrieval is actually using.
 4. **Vector store** (`src/rag/vector_store/`) — `VectorStore` protocol. `InMemoryVectorStore` does
    brute-force cosine similarity over an in-process dict, used for local/dev/tests.
    `OpenSearchVectorStore` is the production adapter; it takes an already-authenticated OpenSearch
@@ -204,12 +236,16 @@ env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, 
 `boto3.client("bedrock-runtime", region_name=settings.aws_region)` and constructs
 `BedrockAnswerer` with it — no injected client needed, since `boto3` resolves credentials
 automatically from whatever IAM role/identity the process is running as, e.g. an ECS task role);
-any other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` and
-`EMBEDDING_PROVIDER` only permit their local/default values (`memory`, `hashing`) — the
-`OpenSearchVectorStore` production adapter must still be constructed and injected by the caller
-directly, since it needs an externally-managed authenticated OpenSearch client the factory
-doesn't build; `BedrockAnswerer` no longer has that constraint since `boto3` itself is the
-authenticated client via ambient IAM credentials. `RERANKER_ENABLED` (default `true`),
+any other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` only permits its
+local/default value (`memory`) — the `OpenSearchVectorStore` production adapter must still be
+constructed and injected by the caller directly, since it needs an externally-managed
+authenticated OpenSearch client the factory doesn't build; `BedrockAnswerer` doesn't have that
+constraint since `boto3` itself is the authenticated client via ambient IAM credentials.
+`EMBEDDING_PROVIDER` accepts `sentence_transformer` (default; model name via
+`EMBEDDING_MODEL_NAME`, default `BAAI/bge-base-en-v1.5`) or `hashing` - both are wired, no
+injected client needed since sentence-transformers loads the model itself from HuggingFace on
+first use.
+`RERANKER_ENABLED` (default `true`),
 `RERANKER_MODEL_NAME`, and
 `RERANKER_CANDIDATE_MULTIPLIER` control the reranking stage independently of which generation
 provider is active — set `RERANKER_ENABLED=false` to bypass it entirely and get the pre-reranking
@@ -241,7 +277,22 @@ started in the FastAPI `lifespan` context manager every `SCHEDULER_INTERVAL_SECO
 deliberately doesn't provide. Admin endpoints: `GET /admin/feature-flags`, `PATCH
 /admin/feature-flags/{name}` (body: `enabled`?/`rollout_percentage`?), `GET
 /admin/scheduler/jobs`, `POST /admin/scheduler/jobs/{job_id}/trigger` (runs a job immediately via
-`Scheduler.trigger()`); all four 404 when `platform_manager` is `None`.
+`Scheduler.trigger()`); all four 404 when `platform_manager` is `None`, with a detail message that
+distinguishes "MLOPS_ENABLED=false" from an actual startup failure (see below).
+
+Both `build_platform_manager()`/`build_rag_service()` calls at module level are wrapped in a
+`try`/`except Exception` - a model download failing, a Bedrock/network error, anything raised
+during construction gets caught, logged, and recorded in module-level `startup_error: str | None`
+rather than crashing the whole ASGI process before it can even start. Without this, an unguarded
+failure meant `app.main` never finished importing - not even `/health` was reachable, and there
+was no way to tell "the app is up but a dependency failed to load" from "the app is completely
+dead" (a plausible contributor to some of the harder-to-diagnose ECS deployment failures
+encountered before this existed). With it: `/health` returns `503` with the actual exception
+message when `startup_error` is set (200 `{"status": "ok"}` otherwise - ECS's health check still
+correctly fails and cycles the task, but the container stays reachable and diagnosable while doing
+so); `/ingest` and `/ask` return `503` with the same detail instead of raising `AttributeError` on
+a `None` `rag_service`; the admin 404s report the real failure reason when there is one, instead
+of always claiming `MLOPS_ENABLED=false`.
 
 Tests in `tests/unit/` mirror this structure one-to-one and mostly test each layer in isolation
 via real (non-mocked) local implementations, plus `test_api.py` for an end-to-end

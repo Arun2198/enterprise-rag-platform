@@ -70,6 +70,16 @@ class RecursiveChunker:
         self,
         content: str
     ) -> list[tuple[str | None, str]]:
+        """
+        Groups lines into sections on heading boundaries. Only closes a
+        section once it has real body content - a run of consecutive
+        heading-like lines (a table of contents, a stack of repeated
+        running headers) keeps accumulating into the same pending section
+        instead of each becoming its own near-empty section. Without this,
+        every TOC entry ("Attributes of the AI RMF 3", page number and
+        all) becomes a standalone one-line chunk that can outrank real
+        content on an exact-phrase query, since it IS that exact phrase.
+        """
         sections: list[tuple[str | None, list[str]]] = []
         current_title: str | None = None
         current_lines: list[str] = []
@@ -79,12 +89,14 @@ class RecursiveChunker:
             if not stripped:
                 continue
 
-            if self._looks_like_heading(stripped) and current_lines:
+            is_heading = self._looks_like_heading(stripped)
+
+            if is_heading and self._has_body_content(current_lines):
                 sections.append((current_title, current_lines))
                 current_title = stripped.strip("# ").strip()
                 current_lines = [stripped]
             else:
-                if self._looks_like_heading(stripped):
+                if is_heading:
                     current_title = stripped.strip("# ").strip()
                 current_lines.append(stripped)
 
@@ -95,6 +107,12 @@ class RecursiveChunker:
             (title, "\n".join(lines))
             for title, lines in sections
         ]
+
+    def _has_body_content(
+        self,
+        lines: list[str]
+    ) -> bool:
+        return any(not self._looks_like_heading(line) for line in lines)
 
     def _split_text(
         self,

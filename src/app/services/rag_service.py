@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 
 from app.schemas import AskResponse
 from app.schemas import IngestResponse
@@ -37,8 +38,12 @@ class RAGService:
         guardrails_enabled: bool = True,
         pii_guard_enabled: bool = True,
         hallucination_guard_enabled: bool = True,
-        groundedness_threshold: float = 0.60
+        groundedness_threshold: float = 0.60,
+        ingest_allowed_dir: str | None = None
     ) -> None:
+        self.ingest_allowed_dir = (
+            Path(ingest_allowed_dir).resolve() if ingest_allowed_dir is not None else None
+        )
         self.ingestion_pipeline = ingestion_pipeline or IngestionPipeline()
         self.chunker = chunker or RecursiveChunker()
         self.embedder = embedder or HashingEmbedder()
@@ -71,6 +76,13 @@ class RAGService:
         errors = []
 
         for file_path in file_paths:
+            if not self._is_path_allowed(file_path):
+                errors.append(
+                    f"{file_path}: PATH_NOT_ALLOWED file path is outside the allowed "
+                    "ingestion directory"
+                )
+                continue
+
             document_result = self.ingestion_pipeline.ingest_file(file_path)
 
             if not document_result.success or document_result.data is None:
@@ -206,6 +218,29 @@ class RAGService:
             return self.feature_flags.is_enabled_for(RERANKER_FLAG_NAME, subject_id)
         except KeyError:
             return True
+
+    def _is_path_allowed(
+        self,
+        file_path: str
+    ) -> bool:
+        """
+        No restriction when ingest_allowed_dir isn't set - the default for
+        direct construction (tests, scripts, main.py's demo run). When it
+        is set (service_factory always sets it for the live API), resolves
+        symlinks/".." segments and requires the result to actually sit
+        inside that directory, so neither a traversal path
+        ("../../etc/passwd") nor an absolute path outside it can reach the
+        filesystem through an unauthenticated network endpoint.
+        """
+        if self.ingest_allowed_dir is None:
+            return True
+
+        try:
+            resolved = Path(file_path).resolve()
+        except (OSError, ValueError):
+            return False
+
+        return resolved == self.ingest_allowed_dir or self.ingest_allowed_dir in resolved.parents
 
     def _format_error(
         self,

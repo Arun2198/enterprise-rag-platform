@@ -18,6 +18,90 @@ def test_build_rag_service_defaults_to_local_runtime():
     assert isinstance(service, RAGService)
 
 
+def test_build_rag_service_restricts_ingest_to_the_configured_directory(tmp_path):
+
+    settings = Settings(ingest_allowed_dir=str(tmp_path))
+
+    service = build_rag_service(settings)
+
+    assert service.ingest_allowed_dir == tmp_path.resolve()
+
+
+def test_build_rag_service_blocks_a_path_outside_the_default_allowed_dir(tmp_path):
+
+    outside_file = tmp_path / "secret.md"
+    outside_file.write_text("# Secret\nNot inside sample_documents.", encoding="utf-8")
+    service = build_rag_service(Settings())
+
+    response = service.ingest([str(outside_file)])
+
+    assert response.indexed_documents == 0
+    assert "PATH_NOT_ALLOWED" in response.errors[0]
+
+
+def test_build_rag_service_defaults_to_sentence_transformer_embedder():
+    """
+    sentence_transformer, not hashing, is the default - the hashing
+    embedder is a deterministic fallback for direct RAGService()
+    construction (tests, scripts), never what the live app silently falls
+    back to.
+    """
+    from rag.embeddings.sentence_transformer_embedder import SentenceTransformerEmbedder
+
+    service = build_rag_service(Settings())
+
+    assert isinstance(service.embedder, SentenceTransformerEmbedder)
+
+
+def test_build_rag_service_wires_hashing_embedder_when_explicitly_requested():
+
+    from rag.embeddings.hashing_embedder import HashingEmbedder
+
+    service = build_rag_service(Settings(embedding_provider="hashing"))
+
+    assert isinstance(service.embedder, HashingEmbedder)
+
+
+@patch("app.service_factory.SentenceTransformerEmbedder")
+def test_build_rag_service_wires_sentence_transformer_embedder(mock_embedder_class):
+
+    settings = Settings(
+        embedding_provider="sentence_transformer",
+        embedding_model_name="BAAI/bge-base-en-v1.5"
+    )
+
+    service = build_rag_service(settings)
+
+    mock_embedder_class.assert_called_once_with(model_name="BAAI/bge-base-en-v1.5")
+    assert service.embedder is mock_embedder_class.return_value
+
+
+@patch("app.service_factory.SentenceTransformerEmbedder")
+def test_build_rag_service_shares_embedder_between_retrieval_and_guardrails(mock_embedder_class):
+
+    settings = Settings(
+        embedding_provider="sentence_transformer",
+        hallucination_guard_enabled=True
+    )
+
+    service = build_rag_service(settings)
+
+    hallucination_guards = [
+        g for g in service.guardrail_manager.guardrails if g.name == "hallucination_detector"
+    ]
+    assert len(hallucination_guards) == 1
+    assert hallucination_guards[0].embedder is mock_embedder_class.return_value
+    assert hallucination_guards[0].embedder is service.embedder
+
+
+def test_build_rag_service_rejects_unwired_embedding_provider():
+
+    settings = Settings(embedding_provider="openai")
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
 def test_build_rag_service_rejects_unwired_provider():
 
     settings = Settings(vector_store_provider="opensearch")
