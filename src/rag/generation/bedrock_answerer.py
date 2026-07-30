@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 from rag.generation.prompt import build_grounded_prompt
@@ -8,6 +7,13 @@ from rag.retrieval.hybrid_retrieval import RetrievedChunk
 class BedrockAnswerer:
     """
     Bedrock runtime adapter with an injected boto3 bedrock-runtime client.
+    Uses the Converse API (client.converse) rather than the raw
+    invoke_model + provider-specific JSON body - Converse works uniformly
+    across every Bedrock model provider (Anthropic, Amazon, Meta, Mistral,
+    ...) and across inference profile ARNs (needed for some newer Claude
+    models, which are only invocable via an inference profile rather than
+    a plain model ID), so model_id can be either shape without this class
+    caring which.
     """
 
     def __init__(
@@ -31,38 +37,22 @@ class BedrockAnswerer:
             return "I could not find relevant context in the indexed documents."
 
         prompt = build_grounded_prompt(query, retrieved_chunks)
-        response = self.client.invoke_model(
+        response = self.client.converse(
             modelId=self.model_id,
-            body=json.dumps(self._claude_messages_payload(prompt)),
-            contentType="application/json",
-            accept="application/json"
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": prompt}]
+                }
+            ],
+            inferenceConfig={
+                "maxTokens": self.max_tokens,
+                "temperature": self.temperature
+            }
         )
-        body = response.get("body")
-        payload = json.loads(body.read() if hasattr(body, "read") else body)
-        content = payload.get("content", [])
+        content = response.get("output", {}).get("message", {}).get("content", [])
 
         if content and "text" in content[0]:
             return content[0]["text"].strip()
 
         return ""
-
-    def _claude_messages_payload(
-        self,
-        prompt: str
-    ) -> dict[str, Any]:
-        return {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }
-            ]
-        }

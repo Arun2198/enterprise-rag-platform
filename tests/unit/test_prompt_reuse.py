@@ -1,4 +1,3 @@
-import json
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -9,28 +8,21 @@ from rag.generation.prompt import build_grounded_prompt
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 
-class FakeBody:
-
-    def read(self):
-        return json.dumps(
-            {
-                "content": [
-                    {
-                        "text": "Grounded answer."
-                    }
-                ]
-            }
-        )
-
-
 class FakeBedrockClient:
 
     def __init__(self):
         self.calls = []
 
-    def invoke_model(self, **kwargs):
+    def converse(self, **kwargs):
         self.calls.append(kwargs)
-        return {"body": FakeBody()}
+        return {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": "Grounded answer."}]
+                }
+            }
+        }
 
 
 def _make_retrieved_chunk() -> RetrievedChunk:
@@ -72,8 +64,7 @@ def test_bedrock_and_openai_compatible_share_identical_prompt(mock_openai_class)
         client=bedrock_client,
         model_id="model-1"
     ).answer(query, retrieved)
-    bedrock_payload = json.loads(bedrock_client.calls[0]["body"])
-    bedrock_prompt = bedrock_payload["messages"][0]["content"][0]["text"]
+    bedrock_prompt = bedrock_client.calls[0]["messages"][0]["content"][0]["text"]
 
     mock_client = mock_openai_class.return_value
     mock_client.chat.completions.create.return_value = _make_completion("Grounded answer.")

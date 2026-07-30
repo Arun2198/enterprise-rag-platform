@@ -92,7 +92,12 @@ providers means passing a different instance into `RAGService.__init__`.
    `OpenAICompatibleAnswerer` are LLM-backed adapters that share one grounded prompt template
    (`rag/generation/prompt.py::build_grounded_prompt`) so every provider answers only from
    retrieved context and cites the same source chunk ids. `BedrockAnswerer` takes an injected
-   boto3 `bedrock-runtime` client. `OpenAICompatibleAnswerer` builds its own `openai.OpenAI`
+   boto3 `bedrock-runtime` client and calls the Converse API (`client.converse`) rather than
+   `invoke_model` with a provider-specific JSON body - Converse works uniformly across every
+   Bedrock model provider and across inference profile ARNs (some newer Claude models, e.g.
+   Claude Haiku 4.5, are only invocable via an inference profile rather than a plain model ID;
+   `model_id` can be either shape without this class caring which). `OpenAICompatibleAnswerer`
+   builds its own `openai.OpenAI`
    client from `api_key`/`base_url`/`model_name` and works against any OpenAI-compatible Chat
    Completions endpoint (OpenAI, Azure OpenAI, GitHub Models, Ollama, OpenRouter, Groq, ...) by
    changing only those config values — no code changes. It returns a fixed fallback string
@@ -185,13 +190,19 @@ anonymous canary sample, just not sticky across requests from the same untracked
 
 **Wiring:** `app/service_factory.py::build_rag_service()` reads `app/config.py::Settings` (from
 env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, `LLM_*`,
-`RERANKER_*`, etc.). `GENERATION_PROVIDER` accepts `extractive` (default) or `openai_compatible`
-(requires `LLM_BASE_URL` + `LLM_API_KEY`, raises `ServiceConfigurationError` if either is
-missing); any other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` and
+`AWS_REGION`, `BEDROCK_MODEL_ID`, `RERANKER_*`, etc.). `GENERATION_PROVIDER` accepts `extractive`
+(default), `openai_compatible` (requires `LLM_BASE_URL` + `LLM_API_KEY`, raises
+`ServiceConfigurationError` if either is missing), or `bedrock` (builds a real
+`boto3.client("bedrock-runtime", region_name=settings.aws_region)` and constructs
+`BedrockAnswerer` with it — no injected client needed, since `boto3` resolves credentials
+automatically from whatever IAM role/identity the process is running as, e.g. an ECS task role);
+any other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` and
 `EMBEDDING_PROVIDER` only permit their local/default values (`memory`, `hashing`) — the
-production adapters (`OpenSearchVectorStore`, `BedrockAnswerer`) must be constructed and injected
-by the caller directly, since those need externally-managed authenticated clients the factory
-doesn't build. `RERANKER_ENABLED` (default `true`), `RERANKER_MODEL_NAME`, and
+`OpenSearchVectorStore` production adapter must still be constructed and injected by the caller
+directly, since it needs an externally-managed authenticated OpenSearch client the factory
+doesn't build; `BedrockAnswerer` no longer has that constraint since `boto3` itself is the
+authenticated client via ambient IAM credentials. `RERANKER_ENABLED` (default `true`),
+`RERANKER_MODEL_NAME`, and
 `RERANKER_CANDIDATE_MULTIPLIER` control the reranking stage independently of which generation
 provider is active — set `RERANKER_ENABLED=false` to bypass it entirely and get the pre-reranking
 `HybridRetriever` behavior back. `GUARDRAILS_ENABLED` (default `true`) is the master switch for

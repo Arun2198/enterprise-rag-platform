@@ -1,3 +1,5 @@
+import boto3
+
 from app.config import Settings
 from app.config import load_settings
 from app.services.rag_service import RERANKER_FLAG_NAME
@@ -6,6 +8,7 @@ from mlops.backup import BackupManager
 from mlops.feature_flags import FeatureFlagManager
 from mlops.manager import PlatformManager
 from rag.embeddings.hashing_embedder import HashingEmbedder
+from rag.generation.bedrock_answerer import BedrockAnswerer
 from rag.generation.openai_compatible_answerer import OpenAICompatibleAnswerer
 from rag.guardrails.base import Guardrail
 from rag.guardrails.hallucination_detector import HallucinationDetector
@@ -16,7 +19,7 @@ from rag.guardrails.pii_guard import PIIGuard
 from rag.guardrails.presidio_pii_guard import PresidioPIIGuard
 from rag.retrieval.reranker import CrossEncoderReranker
 
-WIRED_GENERATION_PROVIDERS = ("extractive", "openai_compatible")
+WIRED_GENERATION_PROVIDERS = ("extractive", "openai_compatible", "bedrock")
 
 
 class ServiceConfigurationError(ValueError):
@@ -43,9 +46,8 @@ def build_rag_service(
 
     if settings.generation_provider not in WIRED_GENERATION_PROVIDERS:
         raise ServiceConfigurationError(
-            "Only GENERATION_PROVIDER=extractive or openai_compatible are wired "
-            "for local runtime. Inject BedrockAnswerer explicitly when deploying "
-            "with a bedrock-runtime client."
+            "Only GENERATION_PROVIDER=extractive, openai_compatible, or bedrock "
+            "are wired for local runtime."
         )
 
     answerer = None
@@ -62,6 +64,14 @@ def build_rag_service(
             base_url=settings.llm_base_url,
             model_name=settings.llm_model_name,
             timeout=settings.llm_timeout_seconds,
+            max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature
+        )
+
+    if settings.generation_provider == "bedrock":
+        answerer = BedrockAnswerer(
+            client=boto3.client("bedrock-runtime", region_name=settings.aws_region),
+            model_id=settings.bedrock_model_id,
             max_tokens=settings.llm_max_tokens,
             temperature=settings.llm_temperature
         )

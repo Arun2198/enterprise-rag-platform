@@ -57,6 +57,29 @@ def test_build_rag_service_requires_llm_credentials_for_openai_compatible():
         build_rag_service(settings)
 
 
+@patch("app.service_factory.BedrockAnswerer")
+@patch("app.service_factory.boto3")
+def test_build_rag_service_wires_bedrock_provider(mock_boto3, mock_answerer_class):
+
+    settings = Settings(
+        generation_provider="bedrock",
+        aws_region="us-west-2",
+        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0"
+    )
+
+    service = build_rag_service(settings)
+
+    mock_boto3.client.assert_called_once_with("bedrock-runtime", region_name="us-west-2")
+    assert isinstance(service, RAGService)
+    assert service.answerer is mock_answerer_class.return_value
+    mock_answerer_class.assert_called_once_with(
+        client=mock_boto3.client.return_value,
+        model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        max_tokens=settings.llm_max_tokens,
+        temperature=settings.llm_temperature
+    )
+
+
 def test_build_rag_service_disables_reranking_when_reranker_disabled():
 
     settings = Settings(reranker_enabled=False)
