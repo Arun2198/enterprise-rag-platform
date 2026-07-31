@@ -1,7 +1,7 @@
 [project]
 name = "enterprise-rag-platform"
 version = "0.1.0"
-description = "Add your description here"
+description = "Enterprise Retrieval-Augmented Generation platform with a provider-swap pipeline, guardrails, evaluation framework, and MLOps backbone"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
