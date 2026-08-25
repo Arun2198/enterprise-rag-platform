@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 evaluation/reports/*.json
 evaluation/reports/*.csv
+mlops_backups/
