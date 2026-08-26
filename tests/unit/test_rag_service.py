@@ -890,3 +890,50 @@ def test_should_abstain_combines_hallucination_and_low_relevance_signals():
     assert service._should_abstain({"hallucination": False, "low_retrieval_relevance": True}) is True
     assert service._should_abstain({"hallucination": False, "low_retrieval_relevance": False}) is False
     assert service._should_abstain({}) is False
+
+
+def test_ask_extracts_valid_citations_from_llm_style_answer(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService(answerer=_FixedAnswerer(
+        "Contractors receive 10 days of leave [Source 1]."
+    ))
+    service.ingest([str(file_path)])
+
+    response = service.ask("How many leave days do contractors receive?")
+
+    assert len(response.citations) == 1
+    assert response.citations[0].valid is True
+    assert response.citations[0].source_number == 1
+    assert response.guardrail_flags["has_invalid_citations"] is False
+
+
+def test_ask_flags_invalid_citation_to_a_nonexistent_source(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService(answerer=_FixedAnswerer(
+        "Contractors receive 10 days of leave per year [Source 1] [Source 9]."
+    ))
+    service.ingest([str(file_path)])
+
+    response = service.ask("How many leave days do contractors receive?")
+
+    assert len(response.citations) == 2
+    assert response.citations[1].source_number == 9
+    assert response.citations[1].valid is False
+    assert response.guardrail_flags["has_invalid_citations"] is True
+
+
+def test_ask_returns_no_citations_for_extractive_answers(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_path)])
+
+    response = service.ask("How many leave days do contractors receive?")
+
+    assert response.citations == []
+    assert "has_invalid_citations" not in response.guardrail_flags

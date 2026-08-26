@@ -5,6 +5,7 @@ from datetime import timezone
 from pathlib import Path
 
 from app.schemas import AskResponse
+from app.schemas import CitationResponse
 from app.schemas import IngestResponse
 from app.schemas import Source
 from ingestion.contracts.document import Document
@@ -14,6 +15,7 @@ from rag.chunking.recursive_chunker import RecursiveChunker
 from rag.embeddings.base import Embedder
 from rag.embeddings.hashing_embedder import HashingEmbedder
 from rag.generation.base import Answerer
+from rag.generation.citations import extract_citations
 from rag.generation.extractive_answerer import ExtractiveAnswerer
 from rag.guardrails.base import Action
 from rag.guardrails.manager import GuardrailManager
@@ -274,12 +276,19 @@ class RAGService:
             # from.
             answer_text = ABSTENTION_MESSAGE
 
+        citations = extract_citations(answer_text, retrieved)
+        flags = output_result.flags
+
+        if citations:
+            flags = {**flags, "has_invalid_citations": any(not c.valid for c in citations)}
+
         return AskResponse(
             answer=answer_text,
             sources=sources,
             groundedness=groundedness,
             confidence=confidence,
-            guardrail_flags=output_result.flags
+            citations=[CitationResponse(**vars(c)) for c in citations],
+            guardrail_flags=flags
         )
 
     def ask_with_trace(
@@ -366,15 +375,22 @@ class RAGService:
         confidence = self._compute_confidence(groundedness, retrieved)
         answer_text = output_result.text
 
-        if self.abstention_enabled and output_result.flags.get("hallucination") is True:
+        if self.abstention_enabled and self._should_abstain(output_result.flags):
             answer_text = ABSTENTION_MESSAGE
+
+        citations = extract_citations(answer_text, retrieved)
+        flags = output_result.flags
+
+        if citations:
+            flags = {**flags, "has_invalid_citations": any(not c.valid for c in citations)}
 
         return AskResponse(
             answer=answer_text,
             sources=sources,
             groundedness=groundedness,
             confidence=confidence,
-            guardrail_flags=output_result.flags
+            citations=[CitationResponse(**vars(c)) for c in citations],
+            guardrail_flags=flags
         ), trace
 
     def _retrieve_with_trace(

@@ -116,6 +116,9 @@ def test_ingest_and_ask_endpoints(tmp_path, monkeypatch):
     assert guardrail_flags["pii_detected"] is False
     assert guardrail_flags["hallucination"] is False
     assert "groundedness" in guardrail_flags
+    # ExtractiveAnswerer copies chunk text verbatim rather than generating
+    # [Source N] markers - citations is correctly empty, not an error
+    assert ask_response.json()["citations"] == []
 
 
 def test_ask_accepts_optional_client_id(tmp_path, monkeypatch):

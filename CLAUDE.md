@@ -263,6 +263,21 @@ providers means passing a different instance into `RAGService.__init__`.
    `service_factory.build_rag_service()` builds a second answerer for that value and wraps the
    primary in `FallbackAnswerer`; when unset (the default), `RAGService.answerer` is just the
    primary provider, unchanged from before this existed.
+
+   **Citation validation** (`rag/generation/citations.py`) - `build_grounded_prompt` instructs
+   every LLM-backed provider to cite claims inline as `[Source N]`, matching that source's number
+   in the prompt's own numbered context list. `extract_citations(answer, retrieved_chunks)` parses
+   those markers back out of the generated answer and resolves each one against the real numbered
+   source list, distinguishing a genuinely different failure mode from `HallucinationDetector`'s
+   whole-answer overlap score: a *specific* fabricated claim of provenance (citing "[Source 9]"
+   when only 3 sources were ever provided) rather than a generic groundedness shortfall.
+   `AskResponse.citations` carries one `CitationResponse` per marker found (document/version/
+   chunk/section for valid ones, just the number for invalid ones); `guardrail_flags
+   .has_invalid_citations` is set whenever any citation resolves to `valid: false`.
+   `ExtractiveAnswerer` output correctly yields an empty citations list (it copies chunk text
+   verbatim rather than generating citation markers) - this is expected behavior, not a gap.
+   Citations are extracted from the *final* answer text (after any abstention replacement), so an
+   abstained response never carries stale citations from the discarded original answer.
 8. **Guardrails** (`src/rag/guardrails/`) — every `Guardrail` (`base.py`) implements one
    `check(context) -> GuardrailFinding` method and declares a `stage` (`INPUT` or `OUTPUT`).
    `GuardrailManager` (`manager.py`) runs the guardrails registered for a given stage, applies any

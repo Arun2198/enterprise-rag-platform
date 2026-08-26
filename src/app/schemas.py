@@ -62,6 +62,15 @@ class Source(BaseModel):
     text: str
 
 
+class CitationResponse(BaseModel):
+    source_number: int
+    valid: bool
+    document_id: str | None = None
+    document_version: int | None = None
+    chunk_id: str | None = None
+    section: str | None = None
+
+
 class AskResponse(BaseModel):
     answer: str
     sources: list[Source]
@@ -73,6 +82,11 @@ class AskResponse(BaseModel):
     # disabled, since there's no real groundedness signal to report then.
     groundedness: float | None = None
     confidence: float
+    # [Source N] markers parsed out of the answer text and resolved
+    # against `sources` - empty for ExtractiveAnswerer (no inline
+    # citations to parse) and for LLM answers that made no claims citing
+    # a specific source. See rag.generation.citations.extract_citations.
+    citations: list[CitationResponse] = Field(default_factory=list)
     guardrail_flags: dict[str, Any] = Field(default_factory=dict)
 
 
