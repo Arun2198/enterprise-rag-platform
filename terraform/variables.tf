@@ -159,6 +159,18 @@ variable "llm_api_key" {
   sensitive   = true
 }
 
+variable "jina_api_key" {
+  description = "API key for Jina embeddings + reranking - the AWS deployment's default providers (spec 1.4 requires API-based embedding/reranking, not a model downloaded into the ECS task). Marked sensitive - pass via TF_VAR_jina_api_key or a gitignored .tfvars file, never commit a real value. Empty string means no secret is created; ecs.tf then falls back to the app's own local-model defaults, which is a real functional degradation, not just a missing feature - set this before applying for real."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "jina_embedding_model" {
+  type    = string
+  default = "jina-embeddings-v3"
+}
+
 variable "cors_allowed_origin" {
   description = "Origin allowed to call the API from a browser (the frontend's own URL). Empty string leaves CORS disabled entirely, matching the app's own default."
   type        = string

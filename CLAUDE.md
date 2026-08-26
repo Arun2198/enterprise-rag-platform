@@ -168,9 +168,16 @@ providers means passing a different instance into `RAGService.__init__`.
    `JinaEmbedder`/`CohereEmbedder` (`EMBEDDING_PROVIDER=jina`/`cohere`, `rag/embeddings/
    jina_embedder.py`/`cohere_embedder.py`) are API-based alternatives with real retry/backoff
    (`EMBEDDING_TIMEOUT_SECONDS`/`EMBEDDING_MAX_RETRIES`) - live-verified against the real Jina API
-   this session (1024-dim vectors, `JINA_API_KEY`); Cohere is unit-tested only, not live-verified
-   (no funded key available). `Embedder.dimensions`/`.provider_name`/`.embed_batch()` are part of
-   the Protocol so every implementation (including `HashingEmbedder`) exposes the same shape.
+   (1024-dim vectors, `JINA_API_KEY`); Cohere is unit-tested only, not live-verified (no funded
+   key available). `Embedder.dimensions`/`.provider_name`/`.embed_batch()` are part of the
+   Protocol so every implementation (including `HashingEmbedder`) exposes the same shape.
+   `sentence_transformer` staying the app-level `Settings` default is deliberately scoped to local
+   development and bare/no-env-var construction (tests, scripts, a laptop with no cloud
+   credentials) - it is *not* what the AWS deployment actually runs. `terraform/ecs.tf` overrides
+   this to `EMBEDDING_PROVIDER=jina` explicitly for the live ECS task, since the platform spec
+   requires the AWS deployment to be API-first rather than downloading a model into the task (see
+   the Reranking section below for the identical `RERANKER_PROVIDER` override, and
+   `terraform/README.md`'s cost-summary note on the resulting per-call API cost).
 4. **Vector store** (`src/rag/vector_store/`) — `VectorStore` protocol. `InMemoryVectorStore` does
    brute-force cosine similarity over an in-process dict, used for local/dev/tests - this stays the
    default for direct `RAGService()` construction. `OpenSearchVectorStore` is the production
@@ -236,9 +243,12 @@ providers means passing a different instance into `RAGService.__init__`.
    .CrossEncoder` for the whole test session so no unit test ever downloads the real model.
    `JinaReranker`/`CohereReranker` (`RERANKER_PROVIDER=jina`/`cohere`, `rag/retrieval/
    jina_reranker.py`/`cohere_reranker.py`) are API-based alternatives with the same
-   `rerank(query, candidates, top_k)` shape - live-verified against the real Jina API this session
-   (correctly ranked a relevant chunk at 0.777 vs an irrelevant one at 0.032); Cohere is
-   unit-tested only, not live-verified.
+   `rerank(query, candidates, top_k)` shape - live-verified against the real Jina API (correctly
+   ranked a relevant chunk at 0.777 vs an irrelevant one at 0.032); Cohere is unit-tested only,
+   not live-verified. Same split as embeddings above: `local` (the `CrossEncoderReranker` cross-
+   encoder) stays the app-level default for local dev/tests/bare construction, but
+   `terraform/ecs.tf` overrides this to `RERANKER_PROVIDER=jina` for the live ECS task - the AWS
+   deployment doesn't download this model either.
 7. **Generation** (`src/rag/generation/`) — `Answerer` protocol. `ExtractiveAnswerer` picks the
    best-overlap sentence from retrieved chunks (no LLM call, fully deterministic — grounded by
    construction since it only ever returns retrieved text). `BedrockAnswerer` and

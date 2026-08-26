@@ -49,7 +49,20 @@ beyond staging/demo traffic.
 | OpenSearch domain (t3.small.search) | **~$25-30/month** - the single largest cost driver, no free tier, runs continuously |
 | ECS Fargate task (1024 CPU / 4096 MB, 1 task) | ~$40-45/month while `desired_count > 0` |
 | Application Load Balancer | ~$16-20/month base charge, plus LCU under real traffic |
+| Jina embeddings + reranking API (default provider, see below) | Per-call, usage-based - no fixed monthly charge, but now a real live third-party cost on every ingest and every query, not free local compute |
 | S3, SQS, CloudWatch Logs, Secrets Manager, ECR | Negligible (a few cents/month combined at this project's scale) |
+
+**Default embedding/reranking provider is Jina, not local models** (`EMBEDDING_PROVIDER=jina`/
+`RERANKER_PROVIDER=jina` in `ecs.tf`) - a deliberate choice to satisfy the platform spec's
+requirement that the AWS deployment be API-first rather than downloading models into the ECS
+task. This trades the previous local-compute cost (CPU/memory already paid for in the Fargate
+task) for a per-call API cost that scales with traffic - fine at this project's low query volume,
+worth re-evaluating before any real production traffic. Requires `TF_VAR_jina_api_key` to be set
+before applying; without it the ECS task fails at startup
+(`ServiceConfigurationError: JINA_API_KEY not set`). Set `EMBEDDING_PROVIDER`/`RERANKER_PROVIDER`
+back to their app-level defaults (`sentence_transformer`/`local`) in `ecs.tf` to revert to local
+models if API cost or a live third-party dependency on every query is undesirable for a given
+deployment.
 
 Set `ecs_desired_count = 0` to stop paying for compute without destroying
 the service definition. There's no equivalent "pause" for the OpenSearch

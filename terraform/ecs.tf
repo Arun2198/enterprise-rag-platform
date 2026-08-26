@@ -158,7 +158,15 @@ resource "aws_ecs_task_definition" "app" {
       environment = concat(
         [
           { name = "RERANKER_ENABLED", value = "true" },
-          { name = "EMBEDDING_PROVIDER", value = "sentence_transformer" },
+          # API-based, not a model downloaded into the ECS task - spec 1.4
+          # requires this for the AWS deployment; sentence_transformer/local
+          # remain the app's own bare-construction defaults for offline
+          # local dev and tests, unaffected by this. Requires
+          # TF_VAR_jina_api_key to be set before apply - see variables.tf.
+          { name = "EMBEDDING_PROVIDER", value = "jina" },
+          { name = "JINA_EMBEDDING_MODEL", value = var.jina_embedding_model },
+          { name = "RERANKER_PROVIDER", value = "jina" },
+          { name = "JINA_RERANK_MODEL", value = var.jina_rerank_model },
           { name = "EMBEDDING_MODEL_NAME", value = var.embedding_model_name },
           { name = "GENERATION_PROVIDER", value = var.generation_provider },
           { name = "GENERATION_FALLBACK_PROVIDER", value = var.generation_fallback_provider },
@@ -180,9 +188,14 @@ resource "aws_ecs_task_definition" "app" {
           { name = "CORS_ALLOWED_ORIGINS", value = var.cors_allowed_origin }
         ] : []
       )
-      secrets = var.llm_api_key != "" ? [
-        { name = "LLM_API_KEY", valueFrom = aws_secretsmanager_secret.llm_api_key[0].arn }
-      ] : []
+      secrets = concat(
+        var.llm_api_key != "" ? [
+          { name = "LLM_API_KEY", valueFrom = aws_secretsmanager_secret.llm_api_key[0].arn }
+        ] : [],
+        var.jina_api_key != "" ? [
+          { name = "JINA_API_KEY", valueFrom = aws_secretsmanager_secret.jina_api_key[0].arn }
+        ] : []
+      )
     }
   ])
 

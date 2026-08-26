@@ -17,4 +17,9 @@ llm_base_url                 = "https://integrate.api.nvidia.com/v1"
 llm_model_name               = "meta/llama-3.1-8b-instruct"
 # llm_api_key = "set via TF_VAR_llm_api_key, never in this file"
 
+# Required before applying with the default EMBEDDING_PROVIDER=jina /
+# RERANKER_PROVIDER=jina (ecs.tf) - without it the ECS task fails at
+# startup (ServiceConfigurationError: JINA_API_KEY not set).
+# jina_api_key = "set via TF_VAR_jina_api_key, never in this file"
+
 cors_allowed_origin = "http://enterprise-rag-platform-frontend-849279003696.s3-website-us-east-1.amazonaws.com"
