@@ -11,6 +11,37 @@ March 2022) backs `main.py`'s demo run and `tests/unit/test_pdf_parser.py::test_
 previously missing from git — only stale `__pycache__/*.pyc` files had been committed — and were
 reconstructed by disassembling that bytecode; see commit history around this fix.)
 
+## Tech stack
+
+**Custom-built** (this codebase's own code, not a wrapper around someone else's framework):
+`RecursiveChunker`, `HybridRetriever` (RRF fusion), the Okapi BM25 implementation, `HashingEmbedder`,
+`ExtractiveAnswerer`, `FallbackAnswerer`, `InMemoryVectorStore`, `OpenSearchVectorStore` /
+`OpenSearchIndexManager` (the integration layer, not OpenSearch itself), `SignedOpenSearchClient`
+(hand-rolled SigV4 HTTP client, written after finding a real hang bug in `opensearch-py`), every
+guardrail and `GuardrailManager` itself (including how third-party detectors like Presidio/NLI/
+LLM-judge get wired into the framework — the detectors' models are third-party, the integration is
+not), `OIDCTokenValidator` and the RBAC `Role`/`Permission` matrix, all FastAPI routes/schemas, the
+async S3/SQS ingestion worker, the entire `src/mlops/` platform (registries, lifecycle manager,
+config manager, feature flags, secrets provider, scheduler, governance log, backup/recovery — no
+external MLOps framework), the entire `src/evaluation/` framework (metrics, golden-dataset runner,
+robustness harness, experiment tracker), and the frontend page (plain HTML/CSS/JS, no framework).
+
+**Third-party** — libraries: FastAPI, Uvicorn, Pydantic, `sentence-transformers`, `pypdf`,
+`python-docx`, `boto3`/`botocore`, `openai` (SDK, used against NVIDIA NIM/formerly GitHub Models),
+`PyJWT`, Microsoft Presidio + spaCy, OpenTelemetry, `pytest`, `uv`. Pretrained models (downloaded,
+not trained here): `BAAI/bge-base-en-v1.5`, `cross-encoder/ms-marco-MiniLM-L-6-v2`,
+`cross-encoder/nli-deberta-v3-base`, `en_core_web_sm`. External AI APIs: AWS Bedrock (Claude
+Haiku 4.5), NVIDIA NIM, Jina AI, Cohere. Managed AWS services (infrastructure, not code):
+OpenSearch Service, S3, SQS, Cognito, ECS Fargate (Express Mode), ECR, IAM, Secrets Manager,
+Bedrock, ELB/ALB, CloudWatch Logs, CloudTrail. CI/CD: GitHub Actions plus its marketplace actions
+(`actions/checkout`, `aws-actions/configure-aws-credentials`, `aws-actions/amazon-ecr-login`,
+`docker/build-push-action`, `aws-actions/amazon-ecs-deploy-express-service`) — deployed via
+`.github/workflows/deploy-aws.yml` using GitHub OIDC → AWS IAM (no long-lived AWS keys in GitHub).
+
+In short: the pipeline architecture, orchestration, guardrail logic, MLOps backbone, evaluation
+framework, and API/frontend are custom; the ML models, cloud infrastructure, and generic
+libraries they run on are third-party.
+
 ## Commands
 
 Dependencies are managed with `uv` (see `uv.lock`); there's no separate lint/format tool configured.
