@@ -74,6 +74,8 @@ class Settings:
     retrieval_relevance_guard_enabled: bool = False
     retrieval_relevance_threshold: float | None = None
     cors_allowed_origins: tuple[str, ...] = ()
+    rate_limit_enabled: bool = True
+    rate_limit_requests_per_minute: int = 120
     cloudwatch_metrics_enabled: bool = False
     cloudwatch_metrics_namespace: str = "EnterpriseRAGPlatform"
     cloudwatch_metrics_export_interval_seconds: float = 60.0
@@ -195,6 +197,8 @@ def load_settings() -> Settings:
             tuple(origin.strip() for origin in _cors_origins_raw.split(","))
             if (_cors_origins_raw := os.getenv("CORS_ALLOWED_ORIGINS")) else ()
         ),
+        rate_limit_enabled=_parse_bool(os.getenv("RATE_LIMIT_ENABLED", "true")),
+        rate_limit_requests_per_minute=int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "120")),
         cloudwatch_metrics_enabled=_parse_bool(os.getenv("CLOUDWATCH_METRICS_ENABLED", "false")),
         cloudwatch_metrics_namespace=os.getenv(
             "CLOUDWATCH_METRICS_NAMESPACE", "EnterpriseRAGPlatform"

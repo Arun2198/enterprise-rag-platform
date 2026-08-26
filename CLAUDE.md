@@ -20,11 +20,13 @@ reconstructed by disassembling that bytecode; see commit history around this fix
 (hand-rolled SigV4 HTTP client, written after finding a real hang bug in `opensearch-py`), every
 guardrail and `GuardrailManager` itself (including how third-party detectors like Presidio/NLI/
 LLM-judge get wired into the framework — the detectors' models are third-party, the integration is
-not), `OIDCTokenValidator` and the RBAC `Role`/`Permission` matrix, all FastAPI routes/schemas, the
-async S3/SQS ingestion worker, the entire `src/mlops/` platform (registries, lifecycle manager,
-config manager, feature flags, secrets provider, scheduler, governance log, backup/recovery — no
-external MLOps framework), the entire `src/evaluation/` framework (metrics, golden-dataset runner,
-robustness harness, experiment tracker), and the frontend page (plain HTML/CSS/JS, no framework).
+not), `OIDCTokenValidator` and the RBAC `Role`/`Permission` matrix, `InMemoryRateLimiter` (a small
+dependency-free fixed-window API rate limiter), all FastAPI routes/schemas, the async S3/SQS
+ingestion worker, the `SQSSchedulerWorker` that fixes cross-task scheduled-job double-execution,
+the entire `src/mlops/` platform (registries, lifecycle manager, config manager, feature flags,
+secrets provider, scheduler, governance log, backup/recovery — no external MLOps framework), the
+entire `src/evaluation/` framework (metrics, golden-dataset runner, robustness harness, experiment
+tracker), and the frontend page (plain HTML/CSS/JS, no framework).
 
 **Third-party** — libraries: FastAPI, Uvicorn, Pydantic, `sentence-transformers`, `pypdf`,
 `python-docx`, `boto3`/`botocore`, `openai` (SDK, used against NVIDIA NIM/formerly GitHub Models),
@@ -566,6 +568,27 @@ when configured), `GET /documents/jobs/{job_id}` (`QUERY`), `DELETE /documents/{
 `{"response": AskResponse, "trace": RetrievalTraceResponse}`). All document-lifecycle endpoints
 plus async ingestion were live-verified end to end against real S3/SQS/OpenSearch this session
 (see the Ingestion section above).
+
+**API hardening** (`app/rate_limiter.py`, `main.py`'s upload streaming) - two real gaps closed
+together since both sit on the unauthenticated-by-default surface (`AUTH_ENABLED` defaults to
+`false`). First: `POST /documents` used to read the *entire* upload into memory
+(`f.write(await file.read())`) before `S3DocumentStore.validate()`'s size check ever ran - a
+large-enough upload could exhaust process memory before any limit was enforced. Fixed by
+streaming the upload in `UPLOAD_CHUNK_SIZE_BYTES` (1 MiB) chunks and aborting with `413` the
+moment the running total exceeds `S3DocumentStore.max_file_size_bytes`, before the rest of the
+body is ever read or written to disk. Second: nothing rate-limited any endpoint at all.
+`rate_limiter.InMemoryRateLimiter` is a small, dependency-free fixed-window limiter (same
+"no external store needed at this project's scale" philosophy as the custom BM25/SigV4-client
+pieces) wired as ASGI middleware in `main.py`, keyed by client IP (`request.client.host` - runs
+before any auth dependency, so it can't key on the authenticated subject) with `/health`/`/ready`
+exempted (ECS's own health check polls these continuously; rate-limiting them would make the
+health check itself take the service down). `RATE_LIMIT_ENABLED` (default `true`) /
+`RATE_LIMIT_REQUESTS_PER_MINUTE` (default `120`) control it. Stated plainly, not hidden: this is
+in-process state, so with `ecs_desired_count > 1` each task enforces its own independent window -
+the effective global limit across the service is up to N times the configured value, the same
+category of caveat the pre-EventBridge interval scheduler had. Correct and sufficient at the
+single-task deployment this repo has actually run against AWS; an exact global limit across
+multiple tasks would need a shared store (Redis/DynamoDB) instead, not implemented here.
 
 Both `build_platform_manager()`/`build_rag_service()` calls at module level are wrapped in a
 `try`/`except Exception` - a model download failing, a Bedrock/network error, anything raised

@@ -11,6 +11,7 @@ from app.auth import AuthenticationError
 from app.auth import OIDCTokenValidator
 from app.config import load_settings
 from app.observability import CloudWatchEMFMetricExporter
+from app.rate_limiter import InMemoryRateLimiter
 from app.schemas import AskDebugResponse
 from app.schemas import AskRequest
 from app.schemas import AskResponse
@@ -49,6 +50,7 @@ try:
     from fastapi import File
     from fastapi import Header
     from fastapi import HTTPException
+    from fastapi import Request
     from fastapi import UploadFile
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
@@ -59,6 +61,7 @@ except ImportError:  # pragma: no cover - keeps core tests runnable pre-API deps
     File = None  # type: ignore[assignment]
     Header = None  # type: ignore[assignment]
     HTTPException = None  # type: ignore[assignment,misc]
+    Request = None  # type: ignore[assignment,misc]
     JSONResponse = None  # type: ignore[assignment,misc]
     UploadFile = None  # type: ignore[assignment,misc]
 
@@ -67,6 +70,10 @@ except ImportError:  # pragma: no cover - keeps core tests runnable pre-API deps
 # every route needing an "is auth even on" branch. Real deployments turn
 # auth on by setting AUTH_ENABLED=true plus the three OIDC_* variables.
 _AUTH_DISABLED_USER = AuthenticatedUser(subject="auth-disabled", role=Role.ADMINISTRATOR, claims={})
+
+# /documents upload streaming chunk size - see upload_document()'s note
+# on why this isn't a single f.write(await file.read()).
+UPLOAD_CHUNK_SIZE_BYTES = 1024 * 1024  # 1 MiB
 
 
 logger = logging.getLogger(__name__)
@@ -282,6 +289,44 @@ if FastAPI is not None:
             allow_headers=["*"]
         )
 
+    _rate_limiter = (
+        InMemoryRateLimiter(
+            requests_per_window=settings.rate_limit_requests_per_minute,
+            window_seconds=60.0
+        )
+        if settings.rate_limit_enabled else None
+    )
+
+    if _rate_limiter is not None:
+        @app.middleware("http")
+        async def rate_limit_middleware(request: Request, call_next):
+            # /health and /ready are polled continuously by ECS's own
+            # health check - rate-limiting those would make the health
+            # check itself the thing that takes the service down.
+            if request.url.path in {"/health", "/ready"}:
+                return await call_next(request)
+
+            # Deliberately re-reads the module-level _rate_limiter (not a
+            # bound local) so tests can monkeypatch it per-test, same
+            # dependency-injection-via-module-global pattern used
+            # elsewhere in this file (rag_service, s3_document_store,
+            # ...). The assert documents for mypy that this closure only
+            # ever runs when the enclosing `if` above already proved it
+            # non-None at app-build time.
+            assert _rate_limiter is not None
+
+            # Client IP, not the authenticated subject - this runs before
+            # any auth dependency, and IP is still a meaningful key for
+            # the unauthenticated-by-default deployment (AUTH_ENABLED
+            # defaults to false). request.client is None in some ASGI
+            # test-client setups, hence the fallback.
+            client_key = request.client.host if request.client else "unknown"
+
+            if not _rate_limiter.allow(client_key):
+                return JSONResponse(status_code=429, content={"detail": "rate limit exceeded"})
+
+            return await call_next(request)
+
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request, exc: Exception):
         """
@@ -456,8 +501,29 @@ if FastAPI is not None:
         fd, temp_path = tempfile.mkstemp(suffix=suffix)
 
         try:
+            # Streamed in fixed-size chunks with an early size-limit abort,
+            # rather than `f.write(await file.read())` - a single unbounded
+            # read used to buffer the *entire* upload into memory before
+            # S3DocumentStore.validate()'s own size check ever ran, on an
+            # endpoint that's unauthenticated by default (AUTH_ENABLED
+            # defaults to false). A large-enough upload could exhaust the
+            # process's memory before any size limit was ever enforced.
+            total_bytes = 0
+
             with os.fdopen(fd, "wb") as f:
-                f.write(await file.read())
+                while chunk := await file.read(UPLOAD_CHUNK_SIZE_BYTES):
+                    total_bytes += len(chunk)
+
+                    if total_bytes > s3_document_store.max_file_size_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"file exceeds the {s3_document_store.max_file_size_bytes} "
+                                "byte limit"
+                            )
+                        )
+
+                    f.write(chunk)
 
             key = s3_document_store.upload(temp_path, document_id, original_filename=file.filename)
         except S3ValidationError as ex:

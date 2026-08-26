@@ -454,6 +454,42 @@ def test_ready_returns_503_when_the_vector_store_health_check_fails(monkeypatch)
     assert "cluster unreachable" in response.json()["detail"]
 
 
+def test_rate_limit_returns_429_once_the_window_is_exhausted(monkeypatch):
+
+    from app.rate_limiter import InMemoryRateLimiter
+
+    monkeypatch.setattr(
+        main_module, "_rate_limiter",
+        InMemoryRateLimiter(requests_per_window=1, window_seconds=60.0)
+    )
+    client = TestClient(app)
+
+    first = client.post("/ask", json={"query": "anything"})
+    second = client.post("/ask", json={"query": "anything"})
+
+    assert first.status_code != 429
+    assert second.status_code == 429
+    assert second.json()["detail"] == "rate limit exceeded"
+
+
+def test_rate_limit_exempts_health_and_ready_even_when_exhausted(monkeypatch):
+
+    from app.rate_limiter import InMemoryRateLimiter
+
+    monkeypatch.setattr(
+        main_module, "_rate_limiter",
+        InMemoryRateLimiter(requests_per_window=1, window_seconds=60.0)
+    )
+    client = TestClient(app)
+    client.post("/ask", json={"query": "anything"})  # exhausts the window
+
+    health = client.get("/health")
+    ready = client.get("/ready")
+
+    assert health.status_code != 429
+    assert ready.status_code != 429
+
+
 def test_ready_does_not_require_a_health_check_method():
     """
     InMemoryVectorStore has no health_check() at all - readiness must not
@@ -572,6 +608,7 @@ class _FakeS3StoreForUpload:
 
     def __init__(self):
         self.bucket_name = "fake-bucket"
+        self.max_file_size_bytes = 25 * 1024 * 1024
         self.uploaded = []
 
     def upload(self, local_path, document_id, original_filename=None):
@@ -641,12 +678,27 @@ def test_upload_document_enqueues_an_sqs_message_when_configured(monkeypatch):
     assert body["document_id"] == response.json()["document_id"]
 
 
+def test_upload_document_rejects_a_file_over_the_size_limit(monkeypatch):
+
+    fake_s3 = _FakeS3StoreForUpload()
+    fake_s3.max_file_size_bytes = 10
+    monkeypatch.setattr(main_module, "s3_document_store", fake_s3)
+    monkeypatch.setattr(main_module, "ingestion_job_store", _FakeJobStoreForUpload())
+    client = TestClient(app)
+
+    response = client.post("/documents", files={"file": ("policy.md", b"x" * 100, "text/markdown")})
+
+    assert response.status_code == 413
+    assert fake_s3.uploaded == []
+
+
 def test_upload_document_rejects_a_disallowed_file_type(monkeypatch):
 
     from ingestion.s3_document_store import S3ValidationError
 
     class RejectingS3Store:
         bucket_name = "fake-bucket"
+        max_file_size_bytes = 25 * 1024 * 1024
         def upload(self, local_path, document_id, original_filename=None):
             raise S3ValidationError("file type not allowed")
 
