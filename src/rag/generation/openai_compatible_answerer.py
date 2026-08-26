@@ -4,6 +4,7 @@ import time
 from openai import OpenAI
 
 from rag.generation.prompt import build_grounded_prompt
+from rag.generation.telemetry import record_generation
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,14 @@ class OpenAICompatibleAnswerer:
             self._log_success(
                 started_at=started_at,
                 retry_count=retry_count
+            )
+            usage = getattr(response, "usage", None)
+            record_generation(
+                provider="openai_compatible",
+                model=self.model_name,
+                input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
+                output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
+                latency_seconds=time.monotonic() - started_at
             )
             return (response.choices[0].message.content or "").strip()
 

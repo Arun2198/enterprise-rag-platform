@@ -1,6 +1,8 @@
+import time
 from typing import Any
 
 from rag.generation.prompt import build_grounded_prompt
+from rag.generation.telemetry import record_generation
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 
@@ -37,6 +39,7 @@ class BedrockAnswerer:
             return "I could not find relevant context in the indexed documents."
 
         prompt = build_grounded_prompt(query, retrieved_chunks)
+        started_at = time.monotonic()
         response = self.client.converse(
             modelId=self.model_id,
             messages=[
@@ -49,6 +52,14 @@ class BedrockAnswerer:
                 "maxTokens": self.max_tokens,
                 "temperature": self.temperature
             }
+        )
+        usage = response.get("usage", {})
+        record_generation(
+            provider="bedrock",
+            model=self.model_id,
+            input_tokens=usage.get("inputTokens"),
+            output_tokens=usage.get("outputTokens"),
+            latency_seconds=time.monotonic() - started_at
         )
         content = response.get("output", {}).get("message", {}).get("content", [])
 

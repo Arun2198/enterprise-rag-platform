@@ -278,6 +278,23 @@ providers means passing a different instance into `RAGService.__init__`.
    verbatim rather than generating citation markers) - this is expected behavior, not a gap.
    Citations are extracted from the *final* answer text (after any abstention replacement), so an
    abstained response never carries stale citations from the discarded original answer.
+
+   **Cost observability** (`rag/generation/telemetry.py::record_generation`) - `BedrockAnswerer`
+   and `OpenAICompatibleAnswerer` both call this right after a successful response, reading real
+   token usage straight from the provider's own response (`response["usage"]` for Bedrock's
+   Converse API, `response.usage.prompt_tokens`/`.completion_tokens` for OpenAI-compatible Chat
+   Completions) - never estimated by counting characters. Deliberately *not* stored as instance
+   state on the Answerer (these are shared singletons across concurrent requests, built once at
+   startup - a "last usage" attribute would be a real race condition), just recorded straight into
+   OTel counters (`generation.requests`, `generation.input_tokens`, `generation.output_tokens`,
+   `generation.estimated_cost_usd`) the same way `rag/guardrails/telemetry.py` already does -
+   flows through the CloudWatch EMF exporter above for free, zero additional wiring.
+   `MODEL_COST_PER_1K_TOKENS` is a short, explicit, hand-maintained price table (not a pricing API
+   integration - "keep it lightweight" is the point) with Bedrock inference-profile ARNs resolved
+   to their trailing model-id segment so one entry covers every region/account. A model not in the
+   table gets `cost=None`, not a silently wrong zero - `estimate_cost_usd()` and `record_generation`
+   both treat "unknown" as a distinct, honestly-reported case. `ExtractiveAnswerer` records nothing
+   here (no LLM call, no tokens, no cost - correctly nothing to report).
 8. **Guardrails** (`src/rag/guardrails/`) — every `Guardrail` (`base.py`) implements one
    `check(context) -> GuardrailFinding` method and declares a `stage` (`INPUT` or `OUTPUT`).
    `GuardrailManager` (`manager.py`) runs the guardrails registered for a given stage, applies any

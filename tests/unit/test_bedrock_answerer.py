@@ -107,3 +107,41 @@ def test_bedrock_answerer_returns_empty_string_when_response_has_no_content():
     answerer = BedrockAnswerer(client=EmptyContentClient(), model_id="model-1")
 
     assert answerer.answer("q", retrieved) == ""
+
+
+def test_bedrock_answerer_records_generation_telemetry_when_usage_present():
+    from conftest import TELEMETRY_READER
+
+    class FakeBedrockClientWithUsage:
+        def converse(self, **kwargs):
+            return {
+                "output": {"message": {"role": "assistant", "content": [{"text": "Answer."}]}},
+                "usage": {"inputTokens": 120, "outputTokens": 40, "totalTokens": 160}
+            }
+
+    answerer = BedrockAnswerer(
+        client=FakeBedrockClientWithUsage(),
+        model_id="anthropic.claude-3-haiku-20240307-v1:0"
+    )
+    chunk = Chunk(
+        chunk_id="doc:0", document_id="doc", chunk_index=0,
+        text="Some context.", source="doc.md", document_type="md"
+    )
+    retrieved = [RetrievedChunk(chunk=chunk, vector_score=0.9, keyword_score=0.0, score=0.9)]
+
+    answerer.answer("a question", retrieved)
+
+    data = TELEMETRY_READER.get_metrics_data()
+    input_token_points = []
+    for resource_metrics in data.resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name == "generation.input_tokens":
+                    input_token_points.extend(metric.data.data_points)
+
+    matching = [
+        p for p in input_token_points
+        if p.attributes.get("model") == "anthropic.claude-3-haiku-20240307-v1:0"
+    ]
+    assert matching
+    assert matching[0].value >= 120

@@ -35,13 +35,29 @@ def _make_retrieved_chunk(
     )
 
 
-def _make_completion(content: str = "Grounded answer.") -> MagicMock:
+def _make_completion(
+    content: str = "Grounded answer.",
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None
+) -> MagicMock:
     message = MagicMock()
     message.content = content
     choice = MagicMock()
     choice.message = message
     completion = MagicMock()
     completion.choices = [choice]
+
+    if prompt_tokens is not None and completion_tokens is not None:
+        usage = MagicMock()
+        usage.prompt_tokens = prompt_tokens
+        usage.completion_tokens = completion_tokens
+        completion.usage = usage
+    else:
+        # MagicMock() auto-creates a truthy .usage attribute by default -
+        # explicitly None here so record_generation's "usage unavailable"
+        # path is exercised, not a mock object masquerading as real usage.
+        completion.usage = None
+
     return completion
 
 
@@ -195,3 +211,32 @@ def test_retries_exhausted_returns_fallback_message(mock_openai_class, mock_slee
     assert answer == FALLBACK_ERROR
     assert mock_client.chat.completions.create.call_count == 3
     assert mock_sleep.call_count == 2
+
+
+@patch("rag.generation.openai_compatible_answerer.OpenAI")
+def test_records_generation_telemetry_when_usage_present(mock_openai_class):
+    from conftest import TELEMETRY_READER
+
+    mock_client = mock_openai_class.return_value
+    mock_client.chat.completions.create.return_value = _make_completion(
+        prompt_tokens=200, completion_tokens=50
+    )
+    answerer = OpenAICompatibleAnswerer(
+        api_key="key",
+        base_url="https://example.com/v1",
+        model_name="gpt-4o-mini"
+    )
+
+    answerer.answer("What can be used?", [_make_retrieved_chunk()])
+
+    data = TELEMETRY_READER.get_metrics_data()
+    input_token_points = []
+    for resource_metrics in data.resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name == "generation.input_tokens":
+                    input_token_points.extend(metric.data.data_points)
+
+    matching = [p for p in input_token_points if p.attributes.get("model") == "gpt-4o-mini"]
+    assert matching
+    assert matching[0].value >= 200
