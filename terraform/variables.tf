@@ -111,6 +111,13 @@ variable "s3_max_file_size_mb" {
   default     = 25
 }
 
+# --- Scheduling -------------------------------------------------------
+variable "scheduler_interval_minutes" {
+  description = "How often EventBridge Scheduler fires each registered job (backup, health_check). Matches the app's own SCHEDULER_INTERVAL_SECONDS default (300s = 5 minutes) - EventBridge Scheduler's rate expression only supports whole-minute granularity, hence minutes here rather than seconds."
+  type        = number
+  default     = 5
+}
+
 # --- Application configuration (passed to the ECS task as env vars) -
 variable "embedding_model_name" {
   type    = string

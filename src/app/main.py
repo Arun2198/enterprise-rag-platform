@@ -30,6 +30,8 @@ from app.service_factory import build_ingestion_job_store
 from app.service_factory import build_platform_manager
 from app.service_factory import build_rag_service
 from app.service_factory import build_s3_document_store
+from app.service_factory import build_scheduler_sqs_client
+from app.service_factory import build_scheduler_sqs_worker
 from app.service_factory import build_sqs_client
 from app.service_factory import build_sqs_ingestion_worker
 from ingestion.s3_document_store import S3ValidationError
@@ -109,6 +111,8 @@ s3_document_store = None
 ingestion_job_store = None
 sqs_client = None
 sqs_ingestion_worker = None
+scheduler_sqs_client = None
+scheduler_sqs_worker = None
 startup_error: str | None = None
 
 try:
@@ -117,6 +121,8 @@ try:
     s3_document_store = build_s3_document_store(settings)
     ingestion_job_store = build_ingestion_job_store(settings)
     sqs_client = build_sqs_client(settings)
+    scheduler_sqs_client = build_scheduler_sqs_client(settings)
+    scheduler_sqs_worker = build_scheduler_sqs_worker(settings, platform_manager, scheduler_sqs_client)
 
     if s3_document_store is not None and ingestion_job_store is not None:
         sqs_ingestion_worker = build_sqs_ingestion_worker(
@@ -162,6 +168,16 @@ async def _scheduler_loop() -> None:
     Scheduler owns no thread/loop of its own by design (see
     mlops.scheduler.Scheduler) - this is the "whatever actually owns
     scheduling in a deployment" piece for the FastAPI app specifically.
+
+    Only used when scheduler_sqs_worker is None (SCHEDULER_QUEUE_URL
+    unset) - the pre-existing default. It has a real limitation this
+    module documents rather than hides: every ECS task running this
+    process independently calls run_due_jobs() on its own in-memory
+    Scheduler, so scaling to N tasks means each registered job fires N
+    times per interval, not once. That's fine for a single-task
+    deployment (the only one this repo has actually run against AWS)
+    and is exactly why _scheduler_sqs_loop below exists as the fix for
+    N>1 - see SCHEDULER_QUEUE_URL.
     """
     # Only ever scheduled as an asyncio task from lifespan() when
     # platform_manager is not None (see below) - the assert documents
@@ -170,6 +186,28 @@ async def _scheduler_loop() -> None:
     while True:
         await asyncio.sleep(settings.scheduler_interval_seconds)
         platform_manager.scheduler.run_due_jobs()
+
+
+async def _scheduler_sqs_loop() -> None:
+    """
+    Runs when SCHEDULER_QUEUE_URL is set: EventBridge Scheduler (see
+    terraform/) sends a {"job_id": ...} message per due job on its own
+    cron, and SQSSchedulerWorker.poll_once() executes exactly the job
+    named in each message. Because SQS delivers each message to only
+    one consumer at a time, scaling to N ECS tasks (all polling the
+    same queue) no longer multiplies job executions the way the plain
+    _scheduler_loop above does - this is the actual fix for that bug,
+    not just a description of it.
+    """
+    # Only ever scheduled as an asyncio task from lifespan() when
+    # scheduler_sqs_worker is not None (see below).
+    assert scheduler_sqs_worker is not None
+    while True:
+        await asyncio.sleep(settings.scheduler_queue_poll_interval_seconds)
+        try:
+            scheduler_sqs_worker.poll_once()
+        except Exception as ex:
+            logger.warning("scheduler_sqs_poll_failed", extra={"error": f"{type(ex).__name__}: {ex}"})
 
 
 async def _sqs_ingestion_loop() -> None:
@@ -199,17 +237,25 @@ if FastAPI is not None:
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
         scheduler_task = None
+        scheduler_sqs_task = None
         sqs_task = None
 
         if platform_manager is not None and settings.scheduler_enabled:
-            scheduler_task = asyncio.create_task(_scheduler_loop())
+            # SQS-driven mode and the plain interval loop are mutually
+            # exclusive - running both would execute every due job twice
+            # per cycle, defeating the point of switching to SQS in the
+            # first place.
+            if scheduler_sqs_worker is not None:
+                scheduler_sqs_task = asyncio.create_task(_scheduler_sqs_loop())
+            else:
+                scheduler_task = asyncio.create_task(_scheduler_loop())
 
         if sqs_ingestion_worker is not None:
             sqs_task = asyncio.create_task(_sqs_ingestion_loop())
 
         yield
 
-        for task in (scheduler_task, sqs_task):
+        for task in (scheduler_task, scheduler_sqs_task, sqs_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

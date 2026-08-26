@@ -809,10 +809,42 @@ execution, deliberately with **no background thread of its own** - call `run_due
 periodically from whatever actually owns scheduling in a deployment (a loop, a Kubernetes
 CronJob, a GitHub Actions schedule trigger, cron itself). This keeps it dependency-free and
 testable with a fake clock instead of needing real sleeping/threading in tests. `trigger(job_id)`
-runs a job immediately, outside its schedule. Example jobs: re-index documents, run evaluation,
-health checks, drift detection, backup - register any zero-argument callable. The FastAPI app is
-one such "whatever actually owns scheduling" - see "Wiring" in the main Architecture section for
-the `asyncio`-task-in-`lifespan` loop and the two jobs it registers by default.
+runs a job immediately, outside its schedule (and is also the entry point the EventBridge-driven
+path below uses). Example jobs: re-index documents, run evaluation, health checks, drift
+detection, backup - register any zero-argument callable. The FastAPI app is one such "whatever
+actually owns scheduling" - see "Wiring" in the main Architecture section for the
+`asyncio`-task-in-`lifespan` loop and the two jobs it registers by default.
+
+`_scheduler_loop()`'s plain interval mode has a real bug at `ecs_desired_count > 1`: every ECS
+task runs its own `asyncio` loop against its own in-memory `Scheduler`, with zero coordination
+between tasks, so a job registered once fires once *per task* every interval - a "backup" job
+runs twice per cycle the moment autoscaling brings up a second task (`ecs_max_count` defaults to
+2 in `terraform/variables.tf`), not because of any deploy misconfiguration, just because
+interval-based scheduling has no single-execution guarantee across replicas.
+`mlops/sqs_scheduler_worker.py::SQSSchedulerWorker` fixes this for real by routing job execution
+through SQS instead of a per-task clock: `terraform/scheduler.tf` provisions one
+`aws_scheduler_schedule` (EventBridge Scheduler) per job, each sending a `{"job_id": ...}` message
+to a dedicated SQS queue on its own `rate(N minutes)` schedule; every ECS task polls that same
+queue (`_scheduler_sqs_loop()` in `app/main.py`, same `asyncio`-task-in-`lifespan` pattern as the
+SQS ingestion worker), but SQS's single-delivery-per-consumer guarantee means only one task
+actually receives and processes each message - `SQSSchedulerWorker.poll_once()` calls
+`Scheduler.trigger(job_id)` for the job named in the message, then always deletes the message
+(including on job failure - the job's own failure is already recorded via `JobRun.success=False`,
+and the next EventBridge-scheduled message will fire again on its own cron regardless, so
+retrying via SQS redelivery would just duplicate the exact problem this exists to solve).
+**Wiring** (`service_factory.build_scheduler_sqs_worker`/`build_scheduler_sqs_client`,
+`SCHEDULER_QUEUE_URL` env var, unset by default): unset keeps the plain interval loop exactly as
+it was before this existed (correct at `ecs_desired_count = 1`, the only configuration this repo
+has actually run against real AWS); once set, `app/main.py`'s `lifespan()` runs the SQS-driven
+loop *instead of* the interval loop, never both (running both would double-execute every job,
+defeating the point). `SCHEDULER_QUEUE_POLL_INTERVAL_SECONDS` (default `20`, same default as the
+ingestion queue's own poll interval) controls how often each task checks the queue - independent
+of `SCHEDULER_INTERVAL_SECONDS`, which in this mode only affects `next_run_at` bookkeeping shown
+via `/admin/scheduler/jobs`, not when jobs actually run (EventBridge's own cron owns that).
+`terraform/scheduler.tf` also creates the one new IAM role this module needed to add
+(`scheduler_invocation`, for EventBridge Scheduler's `sqs:SendMessage`) - checked with `terraform
+validate`, but not yet re-verified with a real `terraform plan` (this account's billed resources
+were already torn down when it was written) - see `terraform/README.md`.
 
 **Drift & retraining (not implemented)** — `drift.DriftDetector` Protocol covers `DRIFT_TYPES`
 (data, embedding, retrieval, prompt, model, user_query); `retraining.RetrainingTrigger` +

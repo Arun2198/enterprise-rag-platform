@@ -823,3 +823,68 @@ def test_build_sqs_ingestion_worker_builds_when_fully_configured():
 
     assert isinstance(worker, SQSIngestionWorker)
     assert worker.queue_url == "https://sqs.example/queue"
+
+
+def test_build_scheduler_sqs_client_returns_none_when_queue_url_not_set():
+
+    from app.service_factory import build_scheduler_sqs_client
+
+    assert build_scheduler_sqs_client(Settings(scheduler_queue_url=None)) is None
+
+
+@patch("app.service_factory.build_boto3_client")
+def test_build_scheduler_sqs_client_builds_when_queue_url_set(mock_build_client):
+
+    from app.service_factory import build_scheduler_sqs_client
+
+    build_scheduler_sqs_client(
+        Settings(scheduler_queue_url="https://sqs.example/scheduler-queue", aws_region="us-east-1")
+    )
+
+    mock_build_client.assert_called_once_with("sqs", region_name="us-east-1")
+
+
+def test_build_scheduler_sqs_worker_returns_none_when_platform_manager_missing():
+
+    from app.service_factory import build_scheduler_sqs_worker
+
+    settings = Settings(scheduler_enabled=True, scheduler_queue_url="https://sqs.example/scheduler-queue")
+    worker = build_scheduler_sqs_worker(settings, platform_manager=None, sqs_client=object())
+
+    assert worker is None
+
+
+def test_build_scheduler_sqs_worker_returns_none_when_scheduler_disabled():
+
+    from app.service_factory import build_scheduler_sqs_worker
+
+    settings = Settings(scheduler_enabled=False, scheduler_queue_url="https://sqs.example/scheduler-queue")
+    manager = build_platform_manager(Settings(mlops_enabled=True))
+    worker = build_scheduler_sqs_worker(settings, platform_manager=manager, sqs_client=object())
+
+    assert worker is None
+
+
+def test_build_scheduler_sqs_worker_returns_none_when_no_sqs_client():
+
+    from app.service_factory import build_scheduler_sqs_worker
+
+    settings = Settings(scheduler_enabled=True, scheduler_queue_url="https://sqs.example/scheduler-queue")
+    manager = build_platform_manager(Settings(mlops_enabled=True))
+    worker = build_scheduler_sqs_worker(settings, platform_manager=manager, sqs_client=None)
+
+    assert worker is None
+
+
+def test_build_scheduler_sqs_worker_builds_when_fully_configured():
+
+    from app.service_factory import build_scheduler_sqs_worker
+    from mlops.sqs_scheduler_worker import SQSSchedulerWorker
+
+    settings = Settings(scheduler_enabled=True, scheduler_queue_url="https://sqs.example/scheduler-queue")
+    manager = build_platform_manager(Settings(mlops_enabled=True))
+    worker = build_scheduler_sqs_worker(settings, platform_manager=manager, sqs_client=object())
+
+    assert isinstance(worker, SQSSchedulerWorker)
+    assert worker.queue_url == "https://sqs.example/scheduler-queue"
+    assert worker.scheduler is manager.scheduler

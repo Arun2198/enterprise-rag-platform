@@ -41,6 +41,8 @@ class Settings:
     mlops_backup_s3_prefix: str = "mlops_backups/"
     sqs_queue_url: str | None = None
     sqs_poll_interval_seconds: float = 20.0
+    scheduler_queue_url: str | None = None
+    scheduler_queue_poll_interval_seconds: float = 20.0
     async_ingestion_enabled: bool = False
     auth_enabled: bool = False
     oidc_issuer: str | None = None
@@ -135,6 +137,10 @@ def load_settings() -> Settings:
         s3_jobs_prefix=os.getenv("S3_JOBS_PREFIX", "jobs/"),
         sqs_queue_url=os.getenv("SQS_QUEUE_URL"),
         sqs_poll_interval_seconds=float(os.getenv("SQS_POLL_INTERVAL_SECONDS", "20")),
+        scheduler_queue_url=os.getenv("SCHEDULER_QUEUE_URL"),
+        scheduler_queue_poll_interval_seconds=float(
+            os.getenv("SCHEDULER_QUEUE_POLL_INTERVAL_SECONDS", "20")
+        ),
         async_ingestion_enabled=_parse_bool(os.getenv("ASYNC_INGESTION_ENABLED", "false")),
         auth_enabled=_parse_bool(os.getenv("AUTH_ENABLED", "false")),
         oidc_issuer=os.getenv("OIDC_ISSUER"),

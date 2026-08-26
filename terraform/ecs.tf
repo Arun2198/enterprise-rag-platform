@@ -173,6 +173,8 @@ resource "aws_ecs_task_definition" "app" {
           { name = "ASYNC_INGESTION_ENABLED", value = "true" },
           { name = "INGEST_ALLOWED_DIR", value = "sample_documents" },
           { name = "RETRIEVAL_RELEVANCE_GUARD_ENABLED", value = "true" },
+          { name = "SCHEDULER_QUEUE_URL", value = aws_sqs_queue.scheduler.url },
+          { name = "SCHEDULER_INTERVAL_SECONDS", value = tostring(var.scheduler_interval_minutes * 60) },
         ],
         var.cors_allowed_origin != "" ? [
           { name = "CORS_ALLOWED_ORIGINS", value = var.cors_allowed_origin }

@@ -18,6 +18,10 @@ output "sqs_queue_url" {
   value = aws_sqs_queue.ingestion.url
 }
 
+output "scheduler_queue_url" {
+  value = aws_sqs_queue.scheduler.url
+}
+
 output "alb_dns_name" {
   description = "Public URL for the deployed API (HTTP only - see ecs.tf's note on adding HTTPS)."
   value       = aws_lb.this.dns_name

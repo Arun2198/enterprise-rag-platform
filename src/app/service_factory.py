@@ -10,6 +10,7 @@ from mlops.backup import S3BackupTarget
 from mlops.feature_flags import FeatureFlagManager
 from mlops.ingestion_job_store import IngestionJobStore
 from mlops.manager import PlatformManager
+from mlops.sqs_scheduler_worker import SQSSchedulerWorker
 from rag.embeddings.base import Embedder
 from rag.embeddings.cohere_embedder import CohereEmbedder
 from rag.embeddings.hashing_embedder import HashingEmbedder
@@ -484,4 +485,51 @@ def build_sqs_ingestion_worker(
         s3_store=s3_store,
         job_store=job_store,
         rag_service=rag_service
+    )
+
+
+def build_scheduler_sqs_client(
+    settings: Settings
+):
+    """
+    None when SCHEDULER_QUEUE_URL isn't set - a separate client/queue
+    from build_sqs_client's ingestion queue, since these are two
+    unrelated message flows (document ingestion vs. EventBridge-driven
+    scheduled jobs) that shouldn't share a queue's visibility timeout/
+    redrive policy.
+    """
+    if not settings.scheduler_queue_url:
+        return None
+
+    return build_boto3_client("sqs", region_name=settings.aws_region)
+
+
+def build_scheduler_sqs_worker(
+    settings: Settings,
+    platform_manager: PlatformManager | None,
+    sqs_client
+) -> SQSSchedulerWorker | None:
+    """
+    Returns None unless MLOps + the scheduler + SCHEDULER_QUEUE_URL are
+    all configured - main.py falls back to the plain in-process interval
+    loop (Scheduler.run_due_jobs() on a sleep loop) when this is None,
+    exactly the pre-existing behavior. Once set, EventBridge Scheduler
+    (see terraform/) becomes the source of truth for *when* each job
+    runs, and this worker becomes the thing that actually executes it -
+    SQS's single-delivery-per-consumer guarantee is what prevents every
+    ECS task in the service from firing the same job.
+    """
+    if (
+        platform_manager is None
+        or not settings.scheduler_enabled
+        or sqs_client is None
+    ):
+        return None
+
+    assert settings.scheduler_queue_url is not None
+
+    return SQSSchedulerWorker(
+        sqs_client=sqs_client,
+        queue_url=settings.scheduler_queue_url,
+        scheduler=platform_manager.scheduler
     )

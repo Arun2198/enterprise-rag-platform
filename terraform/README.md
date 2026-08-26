@@ -1,17 +1,22 @@
 # Terraform (Infrastructure as Code)
 
 Reproducible IaC for this platform's AWS resources: ECR, S3 (docs +
-frontend), SQS (+ DLQ), OpenSearch, Secrets Manager, CloudWatch Logs, and a
-standard ECS Fargate + ALB deployment.
+frontend), SQS (+ DLQ, + a separate scheduler queue), EventBridge
+Scheduler, OpenSearch, Secrets Manager, CloudWatch Logs, and a standard
+ECS Fargate + ALB deployment.
 
 ## What this module does *not* manage, and why
 
-- **IAM roles** (`ecsTaskRole`, `ecsTaskExecutionRole`) - referenced via
-  `data` sources, not created. These already exist with the exact
-  permissions this deployment needs (see the root `CLAUDE.md` and the
-  deployment runbook), and IAM is free at rest - there's no cost benefit
-  to Terraform owning them, and doing so would risk colliding with
-  whatever the existing GitHub Actions pipeline already depends on.
+- **The existing ECS task roles** (`ecsTaskRole`, `ecsTaskExecutionRole`) -
+  referenced via `data` sources, not created. These already exist with
+  the exact permissions this deployment needs (see the root `CLAUDE.md`
+  and the deployment runbook), and IAM is free at rest - there's no cost
+  benefit to Terraform owning them, and doing so would risk colliding
+  with whatever the existing GitHub Actions pipeline already depends on.
+  This module does create one genuinely new role
+  (`scheduler_invocation`, in `scheduler.tf`) since EventBridge
+  Scheduler has no existing role to assume - free at rest, same as any
+  other IAM role.
 - **Cognito User Pool** - not created by default (`existing_cognito_user_pool_id`
   is empty). Recreating it would issue a new pool ID and invalidate every
   already-configured `OIDC_*` value across the app and its CI/CD pipeline.
@@ -85,12 +90,18 @@ account.
 
 ## Validated, not yet applied
 
-Every file here has been checked with `terraform validate` and a real
-`terraform plan` against this account's live IAM roles and default VPC
-(24 resources planned, zero errors) - that's what caught a real AWS-side
-constraint (`terraform validate` alone missed it): OpenSearch domain
-names are capped at 28 characters, so `opensearch_domain_name` is
-deliberately a separate, shorter variable from `project_name`. It has
-**not** been applied - per this project's own cost-awareness rules, no
-one should `apply` this without deciding to accept the ongoing cost
-above first.
+Every file here has been checked with `terraform validate` at the time
+each `.tf` file was added, most recently after adding `scheduler.tf`
+(EventBridge Scheduler + its SQS queue + IAM role) - `validate` passes
+clean. The 24-resource `terraform plan` was run earlier against this
+account's live IAM roles and default VPC before `scheduler.tf` existed,
+which is what caught a real AWS-side constraint `terraform validate`
+alone missed: OpenSearch domain names are capped at 28 characters, so
+`opensearch_domain_name` is deliberately a separate, shorter variable
+from `project_name`. `scheduler.tf` itself has **not** yet been checked
+against a real `terraform plan` (this account's own billed resources
+were already torn down when it was written) - re-run `terraform plan`
+against a real account before applying. Nothing here has been
+**applied** - per this project's own cost-awareness rules, no one
+should `apply` this without deciding to accept the ongoing cost above
+first.
