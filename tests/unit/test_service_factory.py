@@ -697,6 +697,27 @@ def test_build_platform_manager_skips_backup_job_when_scheduler_disabled():
     assert manager.scheduler.list_jobs() == []
 
 
+def test_build_platform_manager_has_no_backup_target_when_bucket_not_set():
+
+    manager = build_platform_manager(Settings(mlops_enabled=True, s3_bucket=None))
+
+    assert manager.backup.target is None
+
+
+@patch("app.service_factory.build_boto3_client")
+def test_build_platform_manager_wires_s3_backup_target_when_bucket_set(mock_build_client):
+
+    from mlops.backup import S3BackupTarget
+
+    manager = build_platform_manager(
+        Settings(mlops_enabled=True, s3_bucket="my-bucket", aws_region="us-east-1")
+    )
+
+    assert isinstance(manager.backup.target, S3BackupTarget)
+    assert manager.backup.target.bucket_name == "my-bucket"
+    mock_build_client.assert_called_once_with("s3", region_name="us-east-1")
+
+
 def test_build_rag_service_shares_flags_from_platform_manager():
 
     platform_manager = build_platform_manager(

@@ -185,3 +185,32 @@ class PlatformManager:
         telemetry.record_operation("restore", success=True)
         telemetry.record_audit_event("backup_restored")
         return restored
+
+    def restore_backup_from_target(
+        self,
+        snapshot_id: str
+    ) -> list[str]:
+        """
+        Restores from self.backup.target (e.g. S3BackupTarget) rather
+        than a local path - what a fresh ECS task with no local backup
+        history needs on startup. Raises if this PlatformManager's
+        BackupManager wasn't built with a target.
+        """
+        if self.backup.target is None:
+            raise ValueError("PlatformManager.backup has no target configured - nothing to restore from")
+
+        restored = self.recovery.restore_from_target(snapshot_id, self.backup.target, {
+            "registry": self.registry,
+            "artifacts": self.artifacts,
+            "configuration": self.configuration,
+            "feature_flags": self.feature_flags,
+        })
+        self.governance.record(
+            actor=None,
+            action="backup_restored",
+            resource=snapshot_id,
+            details={"components": restored, "source": "target"}
+        )
+        telemetry.record_operation("restore", success=True)
+        telemetry.record_audit_event("backup_restored")
+        return restored

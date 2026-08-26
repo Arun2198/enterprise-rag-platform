@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from mlops.backup import BackupTarget
 from mlops.backup import ExportableComponent
 
 logger = logging.getLogger(__name__)
@@ -59,3 +60,32 @@ class RecoveryManager:
 
         payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
         return {"path": path, "components": list(payload.keys())}
+
+    def restore_from_target(
+        self,
+        snapshot_id: str,
+        target: BackupTarget,
+        components: dict[str, ExportableComponent]
+    ) -> list[str]:
+        """
+        Same restore contract as restore_snapshot, but reads the durable
+        copy from a BackupTarget (e.g. S3BackupTarget) instead of the
+        local filesystem - what a fresh ECS task actually needs, since
+        its local disk never had the snapshot written to it in the
+        first place.
+        """
+        payload = target.download(snapshot_id)
+        restored = []
+
+        for name, component in components.items():
+            if name not in payload:
+                continue
+
+            component.import_state(payload[name])
+            restored.append(name)
+
+        logger.info(
+            "snapshot_restored_from_target",
+            extra={"snapshot_id": snapshot_id, "target": type(target).__name__, "components": restored}
+        )
+        return restored

@@ -834,8 +834,23 @@ timestamped local JSON file; any component with `.export_state()`/`.import_state
 (`ModelRegistry`, `ArtifactRegistry`, `ConfigurationManager`, `FeatureFlagManager` all implement
 it). `recovery.RecoveryManager.restore_snapshot(path, components)` restores only the components
 explicitly passed in, silently skipping anything else present in the snapshot. `backup.BackupTarget`
-(a cloud destination - S3/Azure Blob/GCS) is an extension point, not implemented; `BackupManager`
-only ever writes locally.
+(a cloud destination - S3/Azure Blob/GCS) is a Protocol; `backup.S3BackupTarget` is the one real
+implementation (Azure Blob/GCS remain unimplemented extension points), same "S3 instead of a new
+database" pattern as `IngestionJobStore`/`S3DocumentStore` - one JSON object per snapshot
+(`{prefix}{snapshot_id}.json`). This is the actual fix for local-only backup never being durable
+on the live app: an ECS Fargate task's local disk (where `mlops_backups/` lives) doesn't survive
+a task restart or redeploy, so a snapshot written only there was gone the moment the container
+that wrote it cycled. `BackupManager(target=...)` uploads every snapshot to the target right after
+the local write - local file stays a fast working copy, the target is the durable source of
+truth; `target=None` (the default for direct construction) keeps local-only behavior unchanged.
+`RecoveryManager.restore_from_target(snapshot_id, target, components)` restores from the durable
+copy instead of a local path - what a *fresh* task with no local backup history actually needs.
+`PlatformManager.restore_backup_from_target(snapshot_id)` wires this through the facade the same
+way `restore_backup(path)` already did, raising `ValueError` if its `BackupManager` wasn't built
+with a target. **Wiring**: `service_factory._build_backup_target()` reuses `S3_BUCKET` (same
+bucket async ingestion already uses, distinct prefix `MLOPS_BACKUP_S3_PREFIX` default
+`mlops_backups/`) rather than provisioning a second bucket - returns `None` (local-only, matching
+prior behavior exactly) when `S3_BUCKET` is unset, same opt-in pattern as async ingestion.
 
 **Permissions (RBAC, no auth)** — `permissions.py`: `Role` (Administrator/MLEngineer/
 DataScientist/Reviewer/ReadOnly) × `Permission` via a static `ROLE_PERMISSIONS` matrix;

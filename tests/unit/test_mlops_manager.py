@@ -1,12 +1,34 @@
 import pytest
 
 from mlops.backup import BackupManager
+from mlops.backup import S3BackupTarget
 from mlops.deployment import LocalDeploymentPipeline
 from mlops.lifecycle import InvalidTransitionError
 from mlops.manager import PlatformManager
 from mlops.manager import ProviderNotFoundError
 from mlops.schemas import AssetType
 from mlops.schemas import LifecycleStage
+
+
+class FakeBody:
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def read(self):
+        return self._data
+
+
+class FakeS3Client:
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def put_object(self, Bucket, Key, Body, ContentType=None):
+        self.objects[Key] = Body
+
+    def get_object(self, Bucket, Key):
+        return {"Body": FakeBody(self.objects[Key])}
 
 
 def test_register_provider_and_get_provider():
@@ -76,6 +98,30 @@ def test_backup_and_restore_round_trip_through_manager(tmp_path):
 
     assert "registry" in restored
     assert restored_manager.registry.list() == manager.registry.list()
+
+
+def test_restore_backup_from_target_round_trip(tmp_path):
+
+    client = FakeS3Client()
+    target = S3BackupTarget(client=client, bucket_name="my-bucket")
+    manager = PlatformManager(backup=BackupManager(output_dir=str(tmp_path), target=target))
+    manager.register_asset(AssetType.EMBEDDING_MODEL, "hashing", "1.0")
+
+    snapshot = manager.create_backup()
+
+    restored_manager = PlatformManager(backup=BackupManager(output_dir=str(tmp_path), target=target))
+    restored = restored_manager.restore_backup_from_target(snapshot.snapshot_id)
+
+    assert "registry" in restored
+    assert restored_manager.registry.list() == manager.registry.list()
+
+
+def test_restore_backup_from_target_without_target_configured_raises():
+
+    manager = PlatformManager()
+
+    with pytest.raises(ValueError):
+        manager.restore_backup_from_target("snapshot_whatever")
 
 
 def test_link_asset_lineage_delegates_to_governance():

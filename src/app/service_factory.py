@@ -6,6 +6,7 @@ from app.services.rag_service import RAGService
 from ingestion.s3_document_store import S3DocumentStore
 from ingestion.sqs_ingestion_worker import SQSIngestionWorker
 from mlops.backup import BackupManager
+from mlops.backup import S3BackupTarget
 from mlops.feature_flags import FeatureFlagManager
 from mlops.ingestion_job_store import IngestionJobStore
 from mlops.manager import PlatformManager
@@ -256,7 +257,10 @@ def build_platform_manager(
         return None
 
     manager = PlatformManager(
-        backup=BackupManager(output_dir=settings.scheduler_backup_dir)
+        backup=BackupManager(
+            output_dir=settings.scheduler_backup_dir,
+            target=_build_backup_target(settings)
+        )
     )
 
     if settings.feature_flags_enabled:
@@ -271,6 +275,29 @@ def build_platform_manager(
         )
 
     return manager
+
+
+def _build_backup_target(
+    settings: Settings
+) -> S3BackupTarget | None:
+    """
+    Returns None (local-file-only backup) when S3_BUCKET isn't set -
+    same opt-in pattern as async ingestion. When it is set, MLOps
+    platform state (registry/artifacts/configuration/feature_flags)
+    survives an ECS task restart instead of vanishing with the
+    container's local disk, reusing the same bucket async ingestion
+    already uses (a distinct prefix, no new bucket to provision/pay
+    for).
+    """
+    if not settings.s3_bucket:
+        return None
+
+    client = build_boto3_client("s3", region_name=settings.aws_region)
+    return S3BackupTarget(
+        client=client,
+        bucket_name=settings.s3_bucket,
+        prefix=settings.mlops_backup_s3_prefix
+    )
 
 
 def _build_feature_flags(

@@ -25,14 +25,81 @@ class ExportableComponent(Protocol):
 
 class BackupTarget(Protocol):
     """
-    Extension point (not implemented) for a cloud backup destination
-    (S3, Azure Blob Storage, GCS). BackupManager below writes snapshots
-    to the local filesystem directly; a concrete BackupTarget would
-    additionally upload the same JSON payload somewhere durable.
+    A durable cloud backup destination (S3, Azure Blob Storage, GCS).
+    BackupManager below always writes snapshots to the local filesystem
+    first; a BackupTarget additionally uploads the same JSON payload
+    somewhere that survives the local disk disappearing - which it does
+    on every ECS Fargate task restart/redeploy, so local-only backup was
+    never actually durable for the live app. S3BackupTarget is the one
+    real implementation; Azure Blob/GCS are still extension points.
     """
 
     def upload(self, snapshot: BackupSnapshot, payload: dict[str, Any]) -> None:
         ...
+
+    def download(self, snapshot_id: str) -> dict[str, Any]:
+        ...
+
+    def list_snapshot_ids(self) -> list[str]:
+        ...
+
+
+class S3BackupTarget:
+    """
+    Real BackupTarget backed by S3 - same "S3 instead of a new
+    database/service" pattern as ingestion_job_store.IngestionJobStore
+    and ingestion.s3_document_store.S3DocumentStore: one small JSON
+    object per snapshot (`{prefix}{snapshot_id}.json`), no separate
+    infra to provision.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        bucket_name: str,
+        prefix: str = "mlops_backups/"
+    ) -> None:
+        self.client = client
+        self.bucket_name = bucket_name
+        self.prefix = prefix
+
+    def upload(
+        self,
+        snapshot: BackupSnapshot,
+        payload: dict[str, Any]
+    ) -> None:
+        self.client.put_object(
+            Bucket=self.bucket_name,
+            Key=self._key(snapshot.snapshot_id),
+            Body=json.dumps(payload).encode("utf-8"),
+            ContentType="application/json"
+        )
+
+    def download(
+        self,
+        snapshot_id: str
+    ) -> dict[str, Any]:
+        response = self.client.get_object(Bucket=self.bucket_name, Key=self._key(snapshot_id))
+        return json.loads(response["Body"].read())
+
+    def list_snapshot_ids(self) -> list[str]:
+        paginator = self.client.get_paginator("list_objects_v2")
+        ids = []
+
+        for page in paginator.paginate(Bucket=self.bucket_name, Prefix=self.prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+
+                if key.endswith(".json"):
+                    ids.append(Path(key).stem)
+
+        return sorted(ids)
+
+    def _key(
+        self,
+        snapshot_id: str
+    ) -> str:
+        return f"{self.prefix}{snapshot_id}.json"
 
 
 class BackupManager:
@@ -41,14 +108,20 @@ class BackupManager:
     anything satisfying ExportableComponent (an `.export_state() ->
     dict` method) - to a timestamped local JSON snapshot. Configuration,
     artifact, and registry backup are all just "pass the right
-    component in".
+    component in". When a `target` (a BackupTarget, e.g. S3BackupTarget)
+    is supplied, every snapshot is also uploaded there right after the
+    local write - the local file stays a fast working copy, the target
+    is the durable source of truth. `target=None` (the default) keeps
+    behavior exactly as before this existed - local-only, no AWS call.
     """
 
     def __init__(
         self,
-        output_dir: str = "mlops_backups"
+        output_dir: str = "mlops_backups",
+        target: BackupTarget | None = None
     ) -> None:
         self.output_dir = Path(output_dir)
+        self.target = target
 
     def create_snapshot(
         self,
@@ -71,6 +144,14 @@ class BackupManager:
             components=list(components.keys()),
             path=str(path)
         )
+
+        if self.target is not None:
+            self.target.upload(snapshot, payload)
+            logger.info(
+                "backup_snapshot_uploaded",
+                extra={"snapshot_id": snapshot_id, "target": type(self.target).__name__}
+            )
+
         logger.info(
             "backup_snapshot_created",
             extra={"snapshot_id": snapshot_id, "components": snapshot.components}

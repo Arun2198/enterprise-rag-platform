@@ -38,6 +38,7 @@ class Settings:
     s3_failed_prefix: str = "failed/"
     s3_max_file_size_mb: int = 25
     s3_jobs_prefix: str = "jobs/"
+    mlops_backup_s3_prefix: str = "mlops_backups/"
     sqs_queue_url: str | None = None
     sqs_poll_interval_seconds: float = 20.0
     async_ingestion_enabled: bool = False
@@ -229,4 +230,5 @@ def load_settings() -> Settings:
         reranker_rollout_percentage=float(os.getenv("RERANKER_ROLLOUT_PERCENTAGE", "100")),
         scheduler_interval_seconds=float(os.getenv("SCHEDULER_INTERVAL_SECONDS", "300")),
         scheduler_backup_dir=os.getenv("SCHEDULER_BACKUP_DIR", "mlops_backups"),
+        mlops_backup_s3_prefix=os.getenv("MLOPS_BACKUP_S3_PREFIX", "mlops_backups/"),
     )
