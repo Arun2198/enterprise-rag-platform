@@ -1,0 +1,96 @@
+# Terraform (Infrastructure as Code)
+
+Reproducible IaC for this platform's AWS resources: ECR, S3 (docs +
+frontend), SQS (+ DLQ), OpenSearch, Secrets Manager, CloudWatch Logs, and a
+standard ECS Fargate + ALB deployment.
+
+## What this module does *not* manage, and why
+
+- **IAM roles** (`ecsTaskRole`, `ecsTaskExecutionRole`) - referenced via
+  `data` sources, not created. These already exist with the exact
+  permissions this deployment needs (see the root `CLAUDE.md` and the
+  deployment runbook), and IAM is free at rest - there's no cost benefit
+  to Terraform owning them, and doing so would risk colliding with
+  whatever the existing GitHub Actions pipeline already depends on.
+- **Cognito User Pool** - not created by default (`existing_cognito_user_pool_id`
+  is empty). Recreating it would issue a new pool ID and invalidate every
+  already-configured `OIDC_*` value across the app and its CI/CD pipeline.
+- **The GitHub Actions OIDC provider / `github-actions-ecs-deploy-role`** -
+  same reasoning as the task roles.
+
+## Why standard ECS Fargate, not "ECS Express Mode"
+
+The GitHub Actions deploy pipeline (`.github/workflows/deploy-aws.yml`)
+uses `aws-actions/amazon-ecs-deploy-express-service`, a managed
+convenience layer with no equivalent Terraform resource type as of this
+module's authoring. This module provisions the *standard* equivalent
+(`aws_ecs_service` + `aws_lb` + target group + listener) - same task
+role, execution role, container port, and health check path, so the two
+deployment paths are functionally interchangeable, but they are **not
+the same resources** and applying this module does not adopt whatever
+Express Mode created. See the root `CLAUDE.md` and the deployment
+runbook for the Express Mode path, which remains the day-to-day
+deployment method; this module is the from-scratch-reproducible
+alternative.
+
+HTTP only - no ACM certificate or custom domain is wired up. Add an
+`aws_acm_certificate` + HTTPS listener before using this for anything
+beyond staging/demo traffic.
+
+## Cost summary (see each `.tf` file's own comments for detail)
+
+| Resource | Cost while it exists |
+|---|---|
+| OpenSearch domain (t3.small.search) | **~$25-30/month** - the single largest cost driver, no free tier, runs continuously |
+| ECS Fargate task (1024 CPU / 4096 MB, 1 task) | ~$40-45/month while `desired_count > 0` |
+| Application Load Balancer | ~$16-20/month base charge, plus LCU under real traffic |
+| S3, SQS, CloudWatch Logs, Secrets Manager, ECR | Negligible (a few cents/month combined at this project's scale) |
+
+Set `ecs_desired_count = 0` to stop paying for compute without destroying
+the service definition. There's no equivalent "pause" for the OpenSearch
+domain - it either exists (and bills) or is destroyed.
+
+## Usage
+
+```bash
+cd terraform
+terraform init
+terraform plan -var-file=example.tfvars   # or your own terraform.tfvars
+terraform apply -var-file=example.tfvars
+```
+
+First apply, before any image has been pushed to ECR: the ECS service
+will fail to start tasks if `container_image` doesn't point at a real,
+already-pushed image. Either apply everything except `aws_ecs_service`
+first (`terraform apply -target=aws_ecr_repository.app ...`), push an
+image via the existing CI/CD pipeline once the ECR repo exists, then
+apply the rest - or set `ecs_desired_count = 0` for the first apply and
+raise it once an image exists.
+
+### After first apply
+
+Update the GitHub Actions repo variables to point at this module's
+outputs (`terraform output`) if you want the existing CI/CD pipeline to
+target these Terraform-managed resources instead of - or alongside -
+whatever it's currently pointed at. This module deliberately does not
+overwrite `OPENSEARCH_HOST`/`S3_BUCKET`/`SQS_QUEUE_URL`/etc. itself.
+
+### State
+
+This module has no configured backend, so state is local
+(`terraform.tfstate`, gitignored) - acceptable for a single-operator
+account, not for a team. Add an `S3` + `DynamoDB` backend block in
+`versions.tf` before more than one person runs `apply` against this
+account.
+
+## Validated, not yet applied
+
+Every file here has been checked with `terraform validate` and a real
+`terraform plan` against this account's live IAM roles and default VPC
+(24 resources planned, zero errors) - that's what caught a real AWS-side
+constraint (`terraform validate` alone missed it): OpenSearch domain
+names are capped at 28 characters, so `opensearch_domain_name` is
+deliberately a separate, shorter variable from `project_name`. It has
+**not** been applied - per this project's own cost-awareness rules, no
+one should `apply` this without deciding to accept the ongoing cost
+above first.
