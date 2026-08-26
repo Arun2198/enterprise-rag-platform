@@ -413,6 +413,31 @@ providers means passing a different instance into `RAGService.__init__`.
    exporter must not break the guardrail pipeline it's observing. No live Prometheus/Grafana
    server is set up or required by this repo.
 
+   **CloudWatch metrics** (`app/observability.py::CloudWatchEMFMetricExporter`,
+   `CLOUDWATCH_METRICS_ENABLED` - default `false`) - the concrete exporter that plugs into the
+   `MeterProvider` extension point above, specifically for a plain ECS Fargate task with no
+   sidecar/collector. Writes CloudWatch Embedded Metric Format (EMF) JSON lines to a dedicated
+   `enterprise_rag_platform.cloudwatch_emf` logger (`propagate=False`, its own `StreamHandler` to
+   stdout so the raw JSON line is never mixed with the app's normal formatted logs) - CloudWatch
+   Logs auto-detects the `_aws` EMF structure in any log entry sent through the log group the ECS
+   task already writes to (via the `awslogs` driver already in the task definition) and creates/
+   updates the named metrics automatically, no extra IAM permission beyond
+   `logs:PutLogEvents` the execution role already has, no ADOT collector. Wired in `main.py` at
+   module level, before `build_platform_manager()`/`build_rag_service()` run, via
+   `PeriodicExportingMetricReader(CloudWatchEMFMetricExporter(...), export_interval_millis=...)`
+   (`CLOUDWATCH_METRICS_NAMESPACE` default `EnterpriseRAGPlatform`,
+   `CLOUDWATCH_METRICS_EXPORT_INTERVAL_SECONDS` default `60`). `Sum` instruments export as their
+   raw counter value; `Histogram` instruments (`guardrail.latency`, `guardrail.groundedness_score`)
+   export as `{name}.avg` (mean = sum/count) and `{name}.count` per interval - a deliberate
+   simplification, not full bucket/percentile fidelity, since "is average latency creeping up"
+   is the signal this project actually needs rather than percentile-accurate histograms. Verified
+   against real OTel `MetricsData` produced through the same shared `TELEMETRY_READER` every other
+   telemetry test uses (`tests/unit/test_cloudwatch_emf_exporter.py`) - real EMF JSON structure,
+   correct `Namespace`/`Dimensions`/`Metrics` envelope, correct histogram mean/count split. Off by
+   default like every other opt-in provider flag in this file; CloudWatch does charge per custom
+   metric name past the first 10/month, so enabling this in a real deployment is a real (small)
+   cost decision, not a free one.
+
 **Authentication & authorization** (`app/auth.py`, `mlops/permissions.py`) - generic,
 vendor-neutral OIDC/JWT, not tied to any specific identity provider: `OIDCTokenValidator(issuer,
 audience, jwks_url, role_claim="role", default_role=Role.READ_ONLY)` uses `PyJWKClient` + PyJWT,

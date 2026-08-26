@@ -10,6 +10,7 @@ from app.auth import AuthenticatedUser
 from app.auth import AuthenticationError
 from app.auth import OIDCTokenValidator
 from app.config import load_settings
+from app.observability import CloudWatchEMFMetricExporter
 from app.schemas import AskDebugResponse
 from app.schemas import AskRequest
 from app.schemas import AskResponse
@@ -69,6 +70,29 @@ _AUTH_DISABLED_USER = AuthenticatedUser(subject="auth-disabled", role=Role.ADMIN
 logger = logging.getLogger(__name__)
 
 settings = load_settings()
+
+if settings.cloudwatch_metrics_enabled:
+    # Wires a real MeterProvider before any of this module's own
+    # instrument-creating imports run (build_platform_manager/
+    # build_rag_service pull in rag.guardrails.telemetry and
+    # mlops.telemetry, whose meters are created at import time) - though
+    # OTel's own deferred-binding proxy means the order wouldn't actually
+    # matter, this keeps intent legible. Off by default, same pattern as
+    # every other guardrail/provider flag in this file - no MeterProvider
+    # configured means these instruments stay the cheap no-ops they
+    # already were, unchanged from before this existed.
+    from opentelemetry import metrics as _otel_metrics
+    from opentelemetry.sdk.metrics import MeterProvider as _MeterProvider
+    from opentelemetry.sdk.metrics.export import (
+        PeriodicExportingMetricReader as _PeriodicExportingMetricReader,
+    )
+
+    _otel_metrics.set_meter_provider(_MeterProvider(metric_readers=[
+        _PeriodicExportingMetricReader(
+            CloudWatchEMFMetricExporter(namespace=settings.cloudwatch_metrics_namespace),
+            export_interval_millis=settings.cloudwatch_metrics_export_interval_seconds * 1000
+        )
+    ]))
 
 # Building the RAG pipeline means loading real ML models (embedder,
 # reranker) - a download hiccup, HuggingFace outage, or OOM here must not

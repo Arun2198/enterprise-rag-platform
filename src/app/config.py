@@ -71,6 +71,9 @@ class Settings:
     retrieval_relevance_guard_enabled: bool = False
     retrieval_relevance_threshold: float | None = None
     cors_allowed_origins: tuple[str, ...] = ()
+    cloudwatch_metrics_enabled: bool = False
+    cloudwatch_metrics_namespace: str = "EnterpriseRAGPlatform"
+    cloudwatch_metrics_export_interval_seconds: float = 60.0
     abstention_enabled: bool = True
     presidio_pii_guard_enabled: bool = False
     presidio_score_threshold: float = 0.5
@@ -184,6 +187,13 @@ def load_settings() -> Settings:
         cors_allowed_origins=(
             tuple(origin.strip() for origin in _cors_origins_raw.split(","))
             if (_cors_origins_raw := os.getenv("CORS_ALLOWED_ORIGINS")) else ()
+        ),
+        cloudwatch_metrics_enabled=_parse_bool(os.getenv("CLOUDWATCH_METRICS_ENABLED", "false")),
+        cloudwatch_metrics_namespace=os.getenv(
+            "CLOUDWATCH_METRICS_NAMESPACE", "EnterpriseRAGPlatform"
+        ),
+        cloudwatch_metrics_export_interval_seconds=float(
+            os.getenv("CLOUDWATCH_METRICS_EXPORT_INTERVAL_SECONDS", "60")
         ),
         abstention_enabled=_parse_bool(os.getenv("ABSTENTION_ENABLED", "true")),
         presidio_pii_guard_enabled=_parse_bool(
