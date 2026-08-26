@@ -177,12 +177,13 @@ def load_settings() -> Settings:
             os.getenv("RETRIEVAL_RELEVANCE_GUARD_ENABLED", "false")
         ),
         retrieval_relevance_threshold=(
-            float(os.getenv("RETRIEVAL_RELEVANCE_THRESHOLD"))
-            if os.getenv("RETRIEVAL_RELEVANCE_THRESHOLD") else None
+            float(_retrieval_relevance_threshold_raw)
+            if (_retrieval_relevance_threshold_raw := os.getenv("RETRIEVAL_RELEVANCE_THRESHOLD"))
+            else None
         ),
         cors_allowed_origins=(
-            tuple(origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(","))
-            if os.getenv("CORS_ALLOWED_ORIGINS") else ()
+            tuple(origin.strip() for origin in _cors_origins_raw.split(","))
+            if (_cors_origins_raw := os.getenv("CORS_ALLOWED_ORIGINS")) else ()
         ),
         abstention_enabled=_parse_bool(os.getenv("ABSTENTION_ENABLED", "true")),
         presidio_pii_guard_enabled=_parse_bool(
@@ -190,8 +191,8 @@ def load_settings() -> Settings:
         ),
         presidio_score_threshold=float(os.getenv("PRESIDIO_SCORE_THRESHOLD", "0.5")),
         presidio_entities=(
-            tuple(os.getenv("PRESIDIO_ENTITIES").split(","))
-            if os.getenv("PRESIDIO_ENTITIES") else None
+            tuple(_presidio_entities_raw.split(","))
+            if (_presidio_entities_raw := os.getenv("PRESIDIO_ENTITIES")) else None
         ),
         nli_hallucination_enabled=_parse_bool(
             os.getenv("NLI_HALLUCINATION_ENABLED", "false")

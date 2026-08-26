@@ -47,3 +47,6 @@ class VectorStore(Protocol):
         metadata: dict
     ) -> None:
         ...
+
+    def count(self) -> int:
+        ...

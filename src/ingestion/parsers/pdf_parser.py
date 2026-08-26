@@ -5,7 +5,6 @@ from pypdf import PdfReader
 from ingestion.contracts.document import Document
 from ingestion.contracts.result import Error
 from ingestion.contracts.result import Result
-from ingestion.contracts.parser_error import ParserError
 from ingestion.parsers.base_parser import BaseParser
 
 
@@ -37,7 +36,8 @@ class PDFParser(BaseParser):
 
                 page_text = page.extract_text()
 
-                if not page_text: continue
+                if not page_text:
+                    continue
                 text_content.append(page_text)
 
             content = "\n".join(text_content)

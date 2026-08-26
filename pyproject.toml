@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.35,<2.0",
-    "cryptography>=43.0,<44.0",
+    "cryptography>=49.0",
     "en-core-web-sm",
     "fastapi>=0.116,<1.0",
     "httpx>=0.28,<1.0",
@@ -17,8 +17,8 @@ dependencies = [
     "pydantic>=2.11,<3.0",
     "python-multipart>=0.0.20,<1.0",
     "pyjwt>=2.9,<3.0",
-    "pypdf>=5.0,<6.0",
-    "pytest>=8.0,<9.0",
+    "pypdf>=6.15.0",
+    "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "python-docx>=1.1,<2.0",
     "requests>=2.32,<3.0",
@@ -29,5 +29,59 @@ dependencies = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+exclude = ["sample_documents", "evaluation/reports", "mlops_backups"]
+
+[tool.ruff.lint]
+# Starter rule set for a previously-unlinted codebase: real correctness/
+# import-hygiene rules only (pyflakes, pycodestyle errors, import sorting,
+# bugbear's non-stylistic checks). Intentionally not the full aggressive
+# preset - a big-bang strict pass on ~150 existing files risks touching
+# working code for style reasons alone. Tighten incrementally later.
+select = ["E", "F", "I", "B"]
+ignore = [
+    "E501",   # line length handled by the formatter/line-length setting, not a hard error
+    "B008",   # FastAPI's Depends(...) as a default arg is the framework's own idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F401"]  # test fixtures/mocks commonly import for side effects
+
+[tool.ruff.lint.isort]
+# Matches this codebase's established one-import-per-line house style -
+# don't let isort collapse `from x import y` / `from x import z` onto one
+# line just because they share a module.
+force-single-line = true
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+ignore_missing_imports = true
+# Starter config: catch real type errors without requiring every existing
+# function to gain full annotations in one pass.
+disallow_untyped_defs = false
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+exclude = ["tests/", "evaluation/reports/", "mlops_backups/", "sample_documents/"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "evaluation/reports", "mlops_backups", ".venv"]
+# B101 (assert use) is standard in this codebase's Result/Protocol pattern
+# and in tests; B104 (bind-all-interfaces) is the correct choice for a
+# containerized app that must listen on 0.0.0.0 to be reachable.
+skips = ["B101", "B104"]
+
 [tool.uv.sources]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "mypy>=2.3.1",
+    "pip-audit>=2.10.1",
+    "ruff>=0.16.4",
+]

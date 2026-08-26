@@ -10,11 +10,11 @@ from mlops.governance import GovernanceLog
 from mlops.lifecycle import LifecycleManager
 from mlops.recovery import RecoveryManager
 from mlops.registry import ModelRegistry
+from mlops.scheduler import Scheduler
 from mlops.schemas import AssetType
 from mlops.schemas import BackupSnapshot
 from mlops.schemas import LifecycleStage
 from mlops.schemas import ModelAsset
-from mlops.scheduler import Scheduler
 from mlops.secrets import LocalEnvSecretsProvider
 from mlops.secrets import SecretsProvider
 

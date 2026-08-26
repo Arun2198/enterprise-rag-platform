@@ -1,4 +1,5 @@
 import pytest
+from conftest import TELEMETRY_READER
 
 from rag.guardrails.base import Action
 from rag.guardrails.base import GuardrailFinding
@@ -6,8 +7,6 @@ from rag.guardrails.base import GuardrailStage
 from rag.guardrails.base import Severity
 from rag.guardrails.telemetry import record_action
 from rag.guardrails.telemetry import record_finding
-
-from conftest import TELEMETRY_READER
 
 # OTel only allows a MeterProvider to be set once per process, so this
 # module shares conftest.TELEMETRY_READER with every other telemetry

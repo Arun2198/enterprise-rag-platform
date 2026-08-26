@@ -69,6 +69,6 @@ def test_fallback_failure_propagates_when_primary_also_fails():
 
     try:
         answerer.answer("q", [])
-        assert False, "expected the fallback's exception to propagate"
+        raise AssertionError("expected the fallback's exception to propagate")
     except RuntimeError as ex:
         assert str(ex) == "fallback down"

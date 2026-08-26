@@ -1,15 +1,15 @@
 import logging
 import math
 import statistics
-import subprocess
+import subprocess  # nosec B404 - fixed argv below, never shell=True or user-supplied strings
 import time
 from typing import Callable
 
 from evaluation import metrics
 from evaluation.schemas import EvaluationReport
 from evaluation.schemas import ExperimentMetadata
-from evaluation.schemas import GoldenDataset
 from evaluation.schemas import GenerationMetric
+from evaluation.schemas import GoldenDataset
 from evaluation.schemas import LatencyStats
 from evaluation.schemas import QueryEvaluation
 
@@ -28,7 +28,9 @@ DEFAULT_K_VALUES = (1, 3, 5, 10)
 
 def current_git_commit_hash() -> str | None:
     try:
-        result = subprocess.run(
+        # Fixed argv, resolved via PATH (standard for invoking well-known
+        # CLI tools) - no injection surface, nothing here is caller input.
+        result = subprocess.run(  # nosec B603 B607
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,

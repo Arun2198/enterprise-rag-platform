@@ -246,6 +246,18 @@ class OpenSearchVectorStore:
             body={"doc": {"metadata": metadata}}
         )
 
+    def count(self) -> int:
+        """
+        Real chunk count for this index - added after mypy caught a
+        genuine production bug: the scheduled health-check job called
+        len(vector_store), which only InMemoryVectorStore supports.
+        OpenSearchVectorStore had no equivalent, so that job silently
+        failed (caught by Scheduler._execute's own per-job try/except)
+        every single run against any OpenSearch-backed deployment.
+        """
+        response = self.client.count(index=self.index_name)
+        return response.get("count", 0)
+
     def health_check(self) -> dict[str, Any]:
         """
         Cluster-wide health, deliberately not scoped to self.index_name -

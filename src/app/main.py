@@ -36,9 +36,9 @@ from mlops.feature_flags import FlagNotFoundError
 from mlops.ingestion_job_store import JobStatus
 from mlops.permissions import PermissionDeniedError
 from mlops.permissions import require_permission as mlops_require_permission
+from mlops.scheduler import JobNotFoundError
 from mlops.schemas import Permission
 from mlops.schemas import Role
-from mlops.scheduler import JobNotFoundError
 
 try:
     from fastapi import Depends
@@ -50,14 +50,14 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
 except ImportError:  # pragma: no cover - keeps core tests runnable pre-API deps
-    CORSMiddleware = None
-    Depends = None
-    FastAPI = None
-    File = None
-    Header = None
-    HTTPException = None
-    JSONResponse = None
-    UploadFile = None
+    CORSMiddleware = None  # type: ignore[assignment,misc]
+    Depends = None  # type: ignore[assignment]
+    FastAPI = None  # type: ignore[assignment,misc]
+    File = None  # type: ignore[assignment]
+    Header = None  # type: ignore[assignment]
+    HTTPException = None  # type: ignore[assignment,misc]
+    JSONResponse = None  # type: ignore[assignment,misc]
+    UploadFile = None  # type: ignore[assignment,misc]
 
 # Full-access synthetic identity used when AUTH_ENABLED=false (the
 # default) - preserves today's fully-open behavior exactly, rather than
@@ -117,13 +117,18 @@ except Exception as ex:
     logger.error("rag_service_initialization_failed", extra={"error": startup_error})
 
 if platform_manager is not None and rag_service is not None and settings.scheduler_enabled:
+    # Bind to a local so the lambda closes over a name mypy (and future
+    # readers) can see is non-None, rather than the reassignable module
+    # global - rag_service/platform_manager are only ever set once above,
+    # but that invariant isn't visible across the closure boundary.
+    _rag_service_for_health_check = rag_service
     platform_manager.scheduler.register(
         job_id="health_check",
         name="Index health check",
         interval_seconds=settings.scheduler_interval_seconds,
         callable_=lambda: logger.info(
             "scheduled_health_check",
-            extra={"indexed_chunks": len(rag_service.vector_store)}
+            extra={"indexed_chunks": _rag_service_for_health_check.vector_store.count()}
         )
     )
 
@@ -134,6 +139,10 @@ async def _scheduler_loop() -> None:
     mlops.scheduler.Scheduler) - this is the "whatever actually owns
     scheduling in a deployment" piece for the FastAPI app specifically.
     """
+    # Only ever scheduled as an asyncio task from lifespan() when
+    # platform_manager is not None (see below) - the assert documents
+    # that call-site invariant for mypy, which can't see across it.
+    assert platform_manager is not None
     while True:
         await asyncio.sleep(settings.scheduler_interval_seconds)
         platform_manager.scheduler.run_due_jobs()
@@ -151,6 +160,9 @@ async def _sqs_ingestion_loop() -> None:
     task later needs zero changes to SQSIngestionWorker itself, only to
     what calls poll_once().
     """
+    # Only ever scheduled as an asyncio task from lifespan() when
+    # sqs_ingestion_worker is not None (see below).
+    assert sqs_ingestion_worker is not None
     while True:
         await asyncio.sleep(settings.sqs_poll_interval_seconds)
         try:
@@ -225,6 +237,16 @@ if FastAPI is not None:
         if not settings.auth_enabled:
             return _AUTH_DISABLED_USER
 
+        if token_validator is None:
+            # auth_enabled=True but startup failed to build the validator
+            # (e.g. malformed JWKS URL) - same 503-with-real-detail pattern
+            # as the other service-unavailable checks below, rather than
+            # an unguarded AttributeError surfacing as a generic 500.
+            raise HTTPException(
+                status_code=503,
+                detail=f"auth service unavailable: {startup_error}"
+            )
+
         if not authorization or not authorization.lower().startswith("bearer "):
             raise HTTPException(status_code=401, detail="missing or malformed Authorization header")
 
@@ -233,7 +255,7 @@ if FastAPI is not None:
         try:
             return token_validator.validate(token)
         except AuthenticationError as ex:
-            raise HTTPException(status_code=401, detail=f"invalid token: {ex}")
+            raise HTTPException(status_code=401, detail=f"invalid token: {ex}") from ex
 
     def require_permission(permission: Permission):
         """
@@ -247,7 +269,7 @@ if FastAPI is not None:
             try:
                 mlops_require_permission(user.role, permission)
             except PermissionDeniedError as ex:
-                raise HTTPException(status_code=403, detail=str(ex))
+                raise HTTPException(status_code=403, detail=str(ex)) from ex
 
             return user
 
@@ -294,7 +316,7 @@ if FastAPI is not None:
                 raise HTTPException(
                     status_code=503,
                     detail=f"vector store unreachable: {type(ex).__name__}: {ex}"
-                )
+                ) from ex
 
         return {"status": "ready"}
 
@@ -369,7 +391,7 @@ if FastAPI is not None:
 
             key = s3_document_store.upload(temp_path, document_id, original_filename=file.filename)
         except S3ValidationError as ex:
-            raise HTTPException(status_code=422, detail=str(ex))
+            raise HTTPException(status_code=422, detail=str(ex)) from ex
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -502,8 +524,8 @@ if FastAPI is not None:
                 flag = platform_manager.feature_flags.set_rollout_percentage(
                     name, request.rollout_percentage
                 )
-        except FlagNotFoundError:
-            raise HTTPException(status_code=404, detail=f"unknown feature flag: {name}")
+        except FlagNotFoundError as ex:
+            raise HTTPException(status_code=404, detail=f"unknown feature flag: {name}") from ex
 
         return FeatureFlagResponse(**vars(flag))
 
@@ -526,8 +548,8 @@ if FastAPI is not None:
 
         try:
             run = platform_manager.scheduler.trigger(job_id)
-        except JobNotFoundError:
-            raise HTTPException(status_code=404, detail=f"unknown scheduled job: {job_id}")
+        except JobNotFoundError as ex:
+            raise HTTPException(status_code=404, detail=f"unknown scheduled job: {job_id}") from ex
 
         return JobRunResponse(**vars(run))
 
@@ -537,4 +559,4 @@ if FastAPI is not None:
 
         return "MLOPS_ENABLED=false - no feature flags or scheduler"
 else:
-    app = None
+    app = None  # type: ignore[assignment]

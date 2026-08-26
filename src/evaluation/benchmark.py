@@ -254,6 +254,12 @@ class BenchmarkRunner:
         ]
 
         if config.generation_provider == "openai_compatible":
+            if not config.llm_base_url or not config.llm_api_key:
+                raise ValueError(
+                    f"benchmark config '{config.label}': generation_provider="
+                    "openai_compatible requires llm_base_url and llm_api_key"
+                )
+
             generation_metrics.append(
                 LLMJudgeGenerationMetric(
                     api_key=config.llm_api_key,

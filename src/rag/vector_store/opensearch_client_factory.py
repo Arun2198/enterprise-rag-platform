@@ -180,6 +180,14 @@ class SignedOpenSearchClient:
         response = self._request("POST", f"/{index}/_search", json_body=body)
         return self._json_or_raise(response)
 
+    def count(
+        self,
+        index: str,
+        body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        response = self._request("POST", f"/{index}/_count", json_body=body or {})
+        return self._json_or_raise(response)
+
     def delete(
         self,
         index: str,
@@ -255,7 +263,9 @@ class SignedOpenSearchClient:
     def _json_or_raise(
         self,
         response: requests.Response
-    ) -> dict[str, Any]:
+    ) -> Any:
+        # Return type is genuinely response-shape-dependent - most
+        # endpoints return a dict, but e.g. _cat/indices returns a list.
         if not response.ok:
             raise OpenSearchHTTPError(response)
 

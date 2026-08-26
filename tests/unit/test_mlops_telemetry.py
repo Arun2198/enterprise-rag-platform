@@ -1,7 +1,7 @@
+from conftest import TELEMETRY_READER
+
 from mlops.telemetry import record_audit_event
 from mlops.telemetry import record_operation
-
-from conftest import TELEMETRY_READER
 
 # Shares conftest.TELEMETRY_READER with the guardrails telemetry tests -
 # see test_guardrails_telemetry.py for why (OTel allows only one

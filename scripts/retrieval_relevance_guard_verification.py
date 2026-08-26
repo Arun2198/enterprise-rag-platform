@@ -24,7 +24,9 @@ from rag.embeddings.hashing_embedder import HashingEmbedder  # noqa: E402
 from rag.embeddings.sentence_transformer_embedder import SentenceTransformerEmbedder  # noqa: E402
 from rag.guardrails.base import GuardrailContext  # noqa: E402
 from rag.guardrails.retrieval_relevance_guard import DENSE_EMBEDDER_DEFAULT_THRESHOLD  # noqa: E402
-from rag.guardrails.retrieval_relevance_guard import HASHING_EMBEDDER_DEFAULT_THRESHOLD  # noqa: E402
+from rag.guardrails.retrieval_relevance_guard import (
+    HASHING_EMBEDDER_DEFAULT_THRESHOLD,  # noqa: E402
+)
 from rag.guardrails.retrieval_relevance_guard import RetrievalRelevanceGuard  # noqa: E402
 
 UNANSWERABLE_QUERIES = [

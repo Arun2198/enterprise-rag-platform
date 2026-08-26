@@ -72,8 +72,19 @@ class AsksQuestions(Protocol):
     code into the standalone evaluation package.
     """
 
-    def ask(self, query: str, top_k: int = 5) -> object:
+    def ask(self, query: str, top_k: int = 5) -> "AskResult":
         ...
+
+
+class AskResult(Protocol):
+    """
+    Structural shape of app.schemas.AskResponse that run_robustness_eval
+    actually reads - a Protocol instead of importing the real type, for
+    the same standalone-evaluation-package reason as AsksQuestions above.
+    """
+    answer: str
+    sources: list[object]
+    confidence: float
 
 
 def load_robustness_dataset(

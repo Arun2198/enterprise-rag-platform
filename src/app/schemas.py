@@ -3,7 +3,6 @@ from typing import Any
 from pydantic import BaseModel
 from pydantic import Field
 
-
 MAX_QUERY_LENGTH = 2000
 MAX_FILE_PATHS_PER_REQUEST = 50
 

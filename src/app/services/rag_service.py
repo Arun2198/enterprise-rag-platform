@@ -154,7 +154,7 @@ class RAGService:
             for chunk in chunk_result.data
         ]
         embeddings = self.embedder.embed_batch([chunk.text for chunk in chunks])
-        records = list(zip(chunks, embeddings))
+        records = list(zip(chunks, embeddings, strict=True))
         self.vector_store.add_many(records)
         return len(records)
 

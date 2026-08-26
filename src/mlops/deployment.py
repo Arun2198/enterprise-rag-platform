@@ -1,6 +1,6 @@
 import json
 import logging
-import subprocess
+import subprocess  # nosec B404 - fixed argv lists below, never shell=True or user-supplied strings
 import sys
 import time
 from dataclasses import dataclass
@@ -126,7 +126,10 @@ class LocalDeploymentPipeline:
         command: list[str]
     ) -> StageResult:
         started_at = time.monotonic()
-        result = subprocess.run(
+        # command is always one of this class's own fixed argv lists
+        # (e.g. ["uv", "run", "pytest", ...]) - never built from caller-
+        # supplied strings, and shell=False (the default) throughout.
+        result = subprocess.run(  # nosec B603
             command,
             cwd=self.repo_root,
             capture_output=True,
@@ -323,7 +326,10 @@ class GitHubActionsDeploymentPipeline:
         self,
         args: list[str]
     ) -> subprocess.CompletedProcess:
-        return subprocess.run(
+        # gh_executable/args come from this class's own construction-time
+        # config (workflow file names, repo), not from any HTTP request -
+        # this pipeline isn't wired into a live endpoint.
+        return subprocess.run(  # nosec B603
             [self.gh_executable, *args],
             capture_output=True,
             text=True

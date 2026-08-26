@@ -148,6 +148,6 @@ def test_benchmark_runner_openai_compatible_generation_requires_credentials(tmp_
 
     try:
         runner.run([config])
-        assert False, "expected ValueError"
+        raise AssertionError("expected ValueError")
     except ValueError as ex:
         assert "llm_base_url" in str(ex)

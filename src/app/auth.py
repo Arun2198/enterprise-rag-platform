@@ -86,7 +86,7 @@ class OIDCTokenValidator:
 
         try:
             return Role(role_value)
-        except ValueError:
+        except ValueError as ex:
             raise AuthenticationError(
                 f"token role claim {self.role_claim!r} has an unrecognized value: {role_value!r}"
-            )
+            ) from ex

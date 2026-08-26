@@ -1,12 +1,12 @@
 import time
+from datetime import datetime
+from datetime import timezone
 
 from evaluation.dataset import load_dataset
 from evaluation.runner import EvaluationRunner
 from evaluation.schemas import ExperimentMetadata
 from evaluation.schemas import GoldenDataset
 from evaluation.schemas import GoldenQuery
-from datetime import datetime
-from datetime import timezone
 
 ITERATIONS = 500
 

@@ -52,7 +52,10 @@ class DefaultSystemMetricsCollector:
 
         if answered:
             estimated_completion_tokens = [
-                len(qe.answer) / CHARS_PER_TOKEN_ESTIMATE for qe in answered
+                # `answered` is already filtered to `qe.answer` truthy above,
+                # but mypy can't carry that narrowing across the separate
+                # comprehension - `or ""` is a no-op at runtime here.
+                len(qe.answer or "") / CHARS_PER_TOKEN_ESTIMATE for qe in answered
             ]
             estimated_query_tokens = [
                 len(qe.query) / CHARS_PER_TOKEN_ESTIMATE for qe in answered

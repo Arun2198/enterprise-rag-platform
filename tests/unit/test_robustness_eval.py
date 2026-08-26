@@ -2,9 +2,9 @@ from app.services.rag_service import ABSTENTION_MESSAGE
 from app.services.rag_service import RAGService
 from evaluation.robustness import load_robustness_dataset
 from evaluation.robustness import run_robustness_eval
+from rag.guardrails.hallucination_detector import HallucinationDetector
 from rag.guardrails.manager import GuardrailManager
 from rag.guardrails.pii_guard import PIIGuard
-from rag.guardrails.hallucination_detector import HallucinationDetector
 from rag.guardrails.prompt_injection_guard import PromptInjectionGuard
 
 

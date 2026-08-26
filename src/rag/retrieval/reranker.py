@@ -46,7 +46,7 @@ class CrossEncoderReranker:
         scored = sorted(
             (
                 self._with_score(candidate, float(score))
-                for candidate, score in zip(candidates, scores)
+                for candidate, score in zip(candidates, scores, strict=True)
             ),
             key=lambda item: item.score,
             reverse=True

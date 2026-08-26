@@ -27,7 +27,7 @@ class DOCXParser(BaseParser):
                     )
                 )
 
-            docx = DocxDocument(path)
+            docx = DocxDocument(str(path))
             text_blocks = []
 
             for paragraph in docx.paragraphs:

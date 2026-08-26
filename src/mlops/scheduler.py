@@ -36,7 +36,7 @@ class Scheduler:
 
     def __init__(self) -> None:
         self._jobs: dict[str, ScheduledJob] = {}
-        self._callables: dict[str, Callable[[], None]] = {}
+        self._callables: dict[str, Callable[[], object]] = {}
         self._runs: dict[str, list[JobRun]] = {}
 
     def register(
@@ -44,7 +44,7 @@ class Scheduler:
         job_id: str,
         name: str,
         interval_seconds: float,
-        callable_: Callable[[], None],
+        callable_: Callable[[], object],
         start_at: float | None = None
     ) -> ScheduledJob:
         if job_id in self._jobs:

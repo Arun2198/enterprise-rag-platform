@@ -110,7 +110,7 @@ class HallucinationDetector:
         first: list[float],
         second: list[float]
     ) -> float:
-        numerator = sum(a * b for a, b in zip(first, second))
+        numerator = sum(a * b for a, b in zip(first, second, strict=True))
         first_norm = sum(a * a for a in first) ** 0.5
         second_norm = sum(b * b for b in second) ** 0.5
 

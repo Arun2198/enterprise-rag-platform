@@ -43,7 +43,7 @@ def mean_reciprocal_rank(
 
     reciprocal_ranks = []
 
-    for retrieved_ids, relevant_ids in zip(ranked_results, relevant_ids_by_query):
+    for retrieved_ids, relevant_ids in zip(ranked_results, relevant_ids_by_query, strict=True):
         reciprocal_ranks.append(
             _reciprocal_rank(
                 retrieved_ids=retrieved_ids,
@@ -116,7 +116,7 @@ def average_rank(
     """
     ranks = []
 
-    for retrieved_ids, relevant_ids in zip(ranked_results, relevant_ids_by_query):
+    for retrieved_ids, relevant_ids in zip(ranked_results, relevant_ids_by_query, strict=True):
         for index, retrieved_id in enumerate(retrieved_ids, start=1):
             if retrieved_id in relevant_ids:
                 ranks.append(index)

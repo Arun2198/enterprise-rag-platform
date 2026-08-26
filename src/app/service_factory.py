@@ -446,6 +446,10 @@ def build_sqs_ingestion_worker(
     if not settings.async_ingestion_enabled or sqs_client is None:
         return None
 
+    # build_sqs_client() only ever returns non-None when sqs_queue_url is
+    # set (see its own guard) - sqs_client not being None here proves it.
+    assert settings.sqs_queue_url is not None
+
     return SQSIngestionWorker(
         sqs_client=sqs_client,
         queue_url=settings.sqs_queue_url,

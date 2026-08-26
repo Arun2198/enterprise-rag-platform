@@ -131,6 +131,9 @@ class InMemoryVectorStore:
     def __len__(self) -> int:
         return len(self._records)
 
+    def count(self) -> int:
+        return len(self._records)
+
     def _matches_filter(
         self,
         chunk: Chunk,
@@ -146,7 +149,7 @@ class InMemoryVectorStore:
         first: list[float],
         second: list[float]
     ) -> float:
-        numerator = sum(a * b for a, b in zip(first, second))
+        numerator = sum(a * b for a, b in zip(first, second, strict=True))
         first_norm = sqrt(sum(a * a for a in first))
         second_norm = sqrt(sum(b * b for b in second))
 

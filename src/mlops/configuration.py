@@ -97,11 +97,15 @@ class ConfigurationManager:
         if not history:
             raise ProfileNotFoundError(target_name)
 
-        current_version = (
-            self._active_version
-            if self._active_profile == target_name
-            else history[-1].version
-        )
+        if self._active_profile == target_name:
+            # _active_version is always set alongside _active_profile
+            # (see activate()) - never independently None once a profile
+            # is active.
+            assert self._active_version is not None
+            current_version = self._active_version
+        else:
+            current_version = history[-1].version
+
         target_version = current_version - 1
 
         if target_version < 1:
