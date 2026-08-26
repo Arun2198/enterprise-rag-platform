@@ -47,8 +47,10 @@ try:
     from fastapi import Header
     from fastapi import HTTPException
     from fastapi import UploadFile
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
 except ImportError:  # pragma: no cover - keeps core tests runnable pre-API deps
+    CORSMiddleware = None
     Depends = None
     FastAPI = None
     File = None
@@ -182,6 +184,21 @@ if FastAPI is not None:
         version="0.1.0",
         lifespan=lifespan
     )
+
+    if settings.cors_allowed_origins:
+        # Off by default (no origins configured = no CORSMiddleware at
+        # all, unchanged from before this existed) - a browser-hosted
+        # frontend on a different origin needs this explicitly opted in
+        # via CORS_ALLOWED_ORIGINS, since this API sits behind real
+        # bearer-token auth rather than relying on browser same-origin
+        # policy for protection.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_allowed_origins),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"]
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request, exc: Exception):

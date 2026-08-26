@@ -70,6 +70,7 @@ class Settings:
     groundedness_threshold: float = 0.60
     retrieval_relevance_guard_enabled: bool = False
     retrieval_relevance_threshold: float | None = None
+    cors_allowed_origins: tuple[str, ...] = ()
     abstention_enabled: bool = True
     presidio_pii_guard_enabled: bool = False
     presidio_score_threshold: float = 0.5
@@ -178,6 +179,10 @@ def load_settings() -> Settings:
         retrieval_relevance_threshold=(
             float(os.getenv("RETRIEVAL_RELEVANCE_THRESHOLD"))
             if os.getenv("RETRIEVAL_RELEVANCE_THRESHOLD") else None
+        ),
+        cors_allowed_origins=(
+            tuple(origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(","))
+            if os.getenv("CORS_ALLOWED_ORIGINS") else ()
         ),
         abstention_enabled=_parse_bool(os.getenv("ABSTENTION_ENABLED", "true")),
         presidio_pii_guard_enabled=_parse_bool(

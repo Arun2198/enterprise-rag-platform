@@ -78,7 +78,8 @@ jobs:
               {"name": "OIDC_ISSUER", "value": "${{ vars.OIDC_ISSUER }}"},
               {"name": "OIDC_AUDIENCE", "value": "${{ vars.OIDC_AUDIENCE }}"},
               {"name": "OIDC_JWKS_URL", "value": "${{ vars.OIDC_JWKS_URL }}"},
-              {"name": "RETRIEVAL_RELEVANCE_GUARD_ENABLED", "value": "true"}
+              {"name": "RETRIEVAL_RELEVANCE_GUARD_ENABLED", "value": "true"},
+              {"name": "CORS_ALLOWED_ORIGINS", "value": "http://enterprise-rag-platform-frontend-849279003696.s3-website-us-east-1.amazonaws.com"}
             ]
           secrets: |
             [
