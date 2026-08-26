@@ -26,3 +26,24 @@ class VectorStore(Protocol):
         metadata_filter: dict[str, str] | None = None
     ) -> list[SearchResult]:
         ...
+
+    def search_lexical(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        metadata_filter: dict[str, str] | None = None
+    ) -> list[SearchResult]:
+        ...
+
+    def delete_by_document(
+        self,
+        document_id: str
+    ) -> int:
+        ...
+
+    def update_metadata(
+        self,
+        chunk_id: str,
+        metadata: dict
+    ) -> None:
+        ...

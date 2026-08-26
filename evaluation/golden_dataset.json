@@ -147,6 +147,34 @@
       "relevant_chunk_ids": ["AI-RMF-1stdraft:146"],
       "category": "framework-overview",
       "difficulty": "medium"
+    },
+    {
+      "id": "Q021",
+      "query": "On what date was this preliminary version of the AI Risk Management Framework first published?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:1"],
+      "category": "semantic-paraphrase",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q022",
+      "query": "Which four communities does NIST regard as the target audience for the AI RMF?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:27"],
+      "category": "semantic-paraphrase",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q023",
+      "query": "How many socio-technical characteristics are listed as having implications for addressing AI risk?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:58"],
+      "category": "numeric",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q024",
+      "query": "How do socio-technical characteristics of AI systems differ from technical characteristics when it comes to measurement?",
+      "relevant_chunk_ids": ["AI-RMF-1stdraft:57"],
+      "category": "comparison",
+      "difficulty": "hard"
     }
   ]
 }

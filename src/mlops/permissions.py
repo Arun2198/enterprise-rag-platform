@@ -12,18 +12,27 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         Permission.TRIGGER_DEPLOYMENT,
         Permission.TRIGGER_RETRAINING,
         Permission.TRIGGER_BACKUP,
+        Permission.QUERY,
+        Permission.UPLOAD_DOCUMENT,
+        Permission.DELETE_DOCUMENT,
+        Permission.DEBUG_QUERY,
     }),
     Role.DATA_SCIENTIST: frozenset({
         Permission.VIEW,
         Permission.REGISTER_ASSET,
         Permission.TRIGGER_RETRAINING,
+        Permission.QUERY,
+        Permission.UPLOAD_DOCUMENT,
+        Permission.DEBUG_QUERY,
     }),
     Role.REVIEWER: frozenset({
         Permission.VIEW,
         Permission.APPROVE_PROMOTION,
+        Permission.QUERY,
     }),
     Role.READ_ONLY: frozenset({
         Permission.VIEW,
+        Permission.QUERY,
     }),
 }
 

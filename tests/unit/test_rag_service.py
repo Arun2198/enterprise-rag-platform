@@ -28,6 +28,62 @@ class _StubReranker:
         return []
 
 
+class _SpyEmbedder:
+
+    dimensions = 384
+
+    def __init__(self):
+        self.embed_batch_calls = []
+        self.embed_calls = []
+
+    def embed(self, text):
+        self.embed_calls.append(text)
+        return [0.1] * self.dimensions
+
+    def embed_batch(self, texts):
+        self.embed_batch_calls.append(list(texts))
+        return [[0.1] * self.dimensions for _ in texts]
+
+
+def test_ingest_embeds_all_chunks_of_a_document_in_one_batch_call(tmp_path):
+
+    file_path = tmp_path / "leave_policy.md"
+    file_path.write_text(
+        "# Leave Policy\n"
+        "Employees receive 20 days of paid leave annually. "
+        "Contractors receive 10 days of leave.",
+        encoding="utf-8"
+    )
+    embedder = _SpyEmbedder()
+    service = RAGService(
+        embedder=embedder,
+        chunker=RecursiveChunker(chunk_size=120, chunk_overlap=20, minimum_chunk_size=10)
+    )
+
+    service.ingest([str(file_path)])
+
+    assert len(embedder.embed_batch_calls) == 1
+    assert embedder.embed_calls == []
+    assert len(embedder.embed_batch_calls[0]) >= 1
+
+
+def test_ingest_stamps_embedding_lineage_onto_indexed_chunks(tmp_path):
+
+    file_path = tmp_path / "leave_policy.md"
+    file_path.write_text("Employees receive 20 days of paid leave annually.", encoding="utf-8")
+    service = RAGService(chunker=RecursiveChunker(chunk_size=900, chunk_overlap=50, minimum_chunk_size=10))
+
+    service.ingest([str(file_path)])
+
+    stored_chunk = service.vector_store.get("leave_policy:0")
+    assert stored_chunk.embedding_provider == "hashing"
+    assert stored_chunk.embedding_model == "hashing-384"
+    assert stored_chunk.embedding_version == "384"
+    assert stored_chunk.indexed_at is not None
+    assert stored_chunk.content_hash is not None
+    assert stored_chunk.chunking_version == "recursive:900:50:10"
+
+
 def test_rag_service_ingests_and_answers_from_markdown(tmp_path):
 
     file_path = tmp_path / "leave_policy.md"
@@ -223,7 +279,8 @@ def test_ask_forwards_reranked_chunks_unchanged_to_answerer(tmp_path):
     service = RAGService(
         answerer=RecordingAnswerer(),
         reranker=reranker,
-        candidate_multiplier=4
+        candidate_multiplier=4,
+        hallucination_guard_enabled=False
     )
     service.ingest([str(file_path)])
 
@@ -249,7 +306,10 @@ def test_ask_redacts_pii_in_final_answer(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("# Policy\nSome policy content here.", encoding="utf-8")
 
-    service = RAGService(answerer=_FixedAnswerer("Contact john@company.com for help."))
+    service = RAGService(
+        answerer=_FixedAnswerer("Contact john@company.com for help."),
+        hallucination_guard_enabled=False
+    )
     service.ingest([str(file_path)])
 
     response = service.ask("policy question", top_k=3)
@@ -433,3 +493,400 @@ def test_same_client_id_gets_stable_canary_bucketing():
     second = service._reranker_enabled_for("stable-client")
 
     assert first == second
+
+
+def _chunk_with_access(chunk_id, text, access_groups=None):
+    return Chunk(
+        chunk_id=chunk_id, document_id="doc", chunk_index=0, text=text,
+        source="doc.md", document_type="markdown",
+        access_groups=access_groups or []
+    )
+
+
+def test_unrestricted_chunks_are_visible_to_any_caller(tmp_path):
+
+    file_path = tmp_path / "public.md"
+    file_path.write_text("Public information anyone can read about the office.", encoding="utf-8")
+    service = RAGService(chunker=RecursiveChunker(chunk_size=900, chunk_overlap=50, minimum_chunk_size=10))
+    service.ingest([str(file_path)])
+
+    response = service.ask("office", access_groups=None)
+
+    assert response.sources
+
+
+def test_restricted_chunk_is_excluded_when_caller_has_no_matching_group():
+
+    service = RAGService()
+    restricted_chunk = _chunk_with_access("doc:0", "Confidential salary information for engineering.", access_groups=["finance"])
+    service.vector_store.add(restricted_chunk, service.embedder.embed(restricted_chunk.text))
+
+    response = service.ask("salary information", access_groups=["engineering"])
+
+    assert response.sources == []
+    assert "salary" not in response.answer.lower() or "could not find" in response.answer.lower()
+
+
+def test_restricted_chunk_is_included_when_caller_has_a_matching_group():
+
+    service = RAGService()
+    restricted_chunk = _chunk_with_access("doc:0", "Confidential salary information for engineering.", access_groups=["finance"])
+    service.vector_store.add(restricted_chunk, service.embedder.embed(restricted_chunk.text))
+
+    response = service.ask("salary information", access_groups=["finance", "engineering"])
+
+    assert response.sources
+    assert response.sources[0].chunk_id == "doc:0"
+
+
+def test_restricted_chunk_is_excluded_when_no_access_groups_provided():
+
+    service = RAGService()
+    restricted_chunk = _chunk_with_access("doc:0", "Confidential salary information.", access_groups=["finance"])
+    service.vector_store.add(restricted_chunk, service.embedder.embed(restricted_chunk.text))
+
+    response = service.ask("salary information", access_groups=None)
+
+    assert response.sources == []
+
+
+def test_confidence_uses_groundedness_not_raw_retrieval_score(tmp_path):
+    """
+    A near-perfect retrieval match (high vector/rerank score) paired with
+    a low-groundedness answer must NOT be reported as high confidence -
+    that's exactly the "retrieval score as answer confidence" mistake
+    this separation exists to avoid.
+    """
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService(
+        hallucination_guard_enabled=True,
+        groundedness_threshold=0.9  # deliberately strict so groundedness comes back low
+    )
+    service.ingest([str(file_path)])
+
+    response = service.ask("How many leave days do contractors receive?")
+
+    assert response.groundedness is not None
+    assert response.confidence == round(max(0.0, min(response.groundedness, 1.0)), 4)
+
+
+def test_confidence_falls_back_to_retrieval_score_when_hallucination_guard_disabled(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService(hallucination_guard_enabled=False)
+    service.ingest([str(file_path)])
+
+    response = service.ask("How many leave days do contractors receive?")
+
+    assert response.groundedness is None
+    assert response.sources
+    top_retrieval_score = max(s.score for s in response.sources)
+    assert response.confidence == round(max(0.0, min(top_retrieval_score, 1.0)), 4)
+
+
+def test_sources_expose_document_version_section_and_retrieval_method(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text(
+        "# Leave Policy\nContractors receive 10 days of leave per year.",
+        encoding="utf-8"
+    )
+    service = RAGService()
+    service.ingest([str(file_path)])
+
+    response = service.ask("How many leave days do contractors receive?")
+
+    source = response.sources[0]
+    assert source.document_version == 1
+    assert source.section == "Leave Policy"
+    assert source.retrieval_method in ("dense", "bm25", "both")
+    assert source.rank >= 1
+
+
+def test_low_groundedness_answer_is_replaced_with_an_abstention_message(tmp_path):
+
+    from app.services.rag_service import ABSTENTION_MESSAGE
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("# Policy\nContractors receive 10 days of leave.", encoding="utf-8")
+    service = RAGService(answerer=_FixedAnswerer("Completely unrelated statement about astronomy."))
+    service.ingest([str(file_path)])
+
+    response = service.ask("policy question", top_k=3)
+
+    assert response.answer == ABSTENTION_MESSAGE
+    assert response.guardrail_flags["hallucination"] is True
+
+
+def test_abstention_keeps_sources_for_auditability(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("# Policy\nContractors receive 10 days of leave.", encoding="utf-8")
+    service = RAGService(answerer=_FixedAnswerer("Completely unrelated statement about astronomy."))
+    service.ingest([str(file_path)])
+
+    response = service.ask("policy question", top_k=3)
+
+    assert response.sources
+
+
+def test_abstention_can_be_disabled(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("# Policy\nContractors receive 10 days of leave.", encoding="utf-8")
+    service = RAGService(
+        answerer=_FixedAnswerer("Completely unrelated statement about astronomy."),
+        abstention_enabled=False
+    )
+    service.ingest([str(file_path)])
+
+    response = service.ask("policy question", top_k=3)
+
+    assert response.answer == "Completely unrelated statement about astronomy."
+
+
+def test_grounded_answer_is_not_replaced_by_abstention(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_path)])
+
+    response = service.ask("How many leave days do contractors receive?")
+
+    assert "10 days" in response.answer
+
+
+def test_delete_document_removes_all_its_chunks(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("# Policy\nSome policy content here that is long enough.", encoding="utf-8")
+    service = RAGService(chunker=RecursiveChunker(chunk_size=30, chunk_overlap=5, minimum_chunk_size=5))
+    ingest_response = service.ingest([str(file_path)])
+
+    deleted_count = service.delete_document("policy")
+
+    assert deleted_count == ingest_response.indexed_chunks
+    assert len(service.vector_store) == 0
+
+
+def test_delete_document_that_was_never_indexed_returns_zero():
+
+    service = RAGService()
+
+    assert service.delete_document("does-not-exist") == 0
+
+
+def test_deleted_document_chunks_no_longer_appear_in_ask_sources(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_path)])
+
+    service.delete_document("policy")
+    response = service.ask("How many leave days do contractors receive?")
+
+    assert response.sources == []
+
+
+def test_reindex_document_replaces_old_chunks_with_new_ones(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_path)])
+    assert len(service.vector_store) == 1
+
+    file_path.write_text("Contractors receive 15 days of leave now.", encoding="utf-8")
+    result = service.reindex_document(str(file_path))
+
+    assert result.indexed_documents == 1
+    assert len(service.vector_store) == 1
+    response = service.ask("How many leave days do contractors receive?")
+    assert "15 days" in response.answer
+
+
+def test_reindex_document_reports_error_for_a_missing_file(tmp_path):
+
+    service = RAGService()
+
+    result = service.reindex_document(str(tmp_path / "does-not-exist.md"))
+
+    assert result.indexed_documents == 0
+    assert result.errors
+
+
+def test_ask_with_trace_returns_matching_ask_response(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_path)])
+
+    plain_response = service.ask("How many leave days do contractors receive?")
+    traced_response, trace = service.ask_with_trace("How many leave days do contractors receive?")
+
+    assert traced_response.answer == plain_response.answer
+    assert traced_response.confidence == plain_response.confidence
+    assert [s.chunk_id for s in traced_response.sources] == [s.chunk_id for s in plain_response.sources]
+
+
+def test_ask_with_trace_records_dense_and_bm25_candidates(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_path)])
+
+    _, trace = service.ask_with_trace("How many leave days do contractors receive?")
+
+    assert trace.query == "How many leave days do contractors receive?"
+    assert len(trace.dense_candidates) >= 1
+    assert len(trace.bm25_candidates) >= 1
+    assert len(trace.fused_candidates) >= 1
+    assert trace.final_chunk_ids
+    assert "embedding" in trace.stage_timings_ms
+    assert "dense_search" in trace.stage_timings_ms
+    assert "bm25_search" in trace.stage_timings_ms
+    assert "rrf_fusion" in trace.stage_timings_ms
+    assert "generation" in trace.stage_timings_ms
+    assert "total" in trace.stage_timings_ms
+
+
+def test_ask_with_trace_records_reranker_candidates_when_reranker_configured(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService(reranker=_StubReranker())
+    service.ingest([str(file_path)])
+
+    _, trace = service.ask_with_trace("How many leave days do contractors receive?")
+
+    assert trace.reranker_used is True
+    assert "rerank" in trace.stage_timings_ms
+
+
+def test_ask_with_trace_records_groundedness_and_guardrail_findings(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_path)])
+
+    _, trace = service.ask_with_trace("How many leave days do contractors receive?")
+
+    assert trace.groundedness is not None
+    assert isinstance(trace.guardrail_findings, list)
+
+
+def test_ask_with_trace_short_circuits_on_blocked_input():
+
+    from rag.guardrails.base import GuardrailFinding
+    from rag.guardrails.base import GuardrailStage
+    from rag.guardrails.base import Severity
+    from rag.guardrails.manager import GuardrailManager
+
+    class _AlwaysBlockInput:
+        stage = GuardrailStage.INPUT
+        name = "always_block"
+
+        def check(self, context):
+            return GuardrailFinding(
+                guardrail_name=self.name,
+                triggered=True,
+                severity=Severity.CRITICAL,
+                action=Action.BLOCK,
+                message="blocked for test"
+            )
+
+    service = RAGService(guardrail_manager=GuardrailManager(guardrails=[_AlwaysBlockInput()]))
+
+    response, trace = service.ask_with_trace("anything")
+
+    assert response.sources == []
+    assert trace.query == "anything"
+    assert "total" in trace.stage_timings_ms
+
+
+class _MarkerEmbedder:
+    """
+    Deterministic 2D embedder for retrieval-relevance tests: text
+    containing "MARKER" embeds to [1, 0], everything else to [0, 1] - lets
+    a test construct an exact "query matches indexed content" (cosine 1.0)
+    or "query is unrelated to indexed content" (cosine 0.0) scenario
+    without depending on a real embedding model's actual output.
+    """
+    dimensions = 2
+    provider_name = "test_dense"
+    model_name = "marker-embedder"
+
+    def embed(self, text):
+        return [1.0, 0.0] if "MARKER" in text else [0.0, 1.0]
+
+    def embed_batch(self, texts):
+        return [self.embed(t) for t in texts]
+
+
+def _service_with_retrieval_relevance_guard(tmp_path, threshold=0.5):
+    file_path = tmp_path / "policy.md"
+    file_path.write_text(
+        "MARKER Contractors receive 10 days of leave per year.", encoding="utf-8"
+    )
+    service = RAGService(
+        embedder=_MarkerEmbedder(),
+        retrieval_relevance_guard_enabled=True,
+        retrieval_relevance_threshold=threshold
+    )
+    service.ingest([str(file_path)])
+    return service
+
+
+def test_low_retrieval_relevance_triggers_abstention_even_with_high_groundedness(tmp_path):
+
+    from app.services.rag_service import ABSTENTION_MESSAGE
+
+    service = _service_with_retrieval_relevance_guard(tmp_path)
+
+    # query has no "MARKER" - unrelated to the only indexed content by
+    # construction (cosine similarity 0.0) - but ExtractiveAnswerer will
+    # still copy verbatim from the retrieved chunk, so groundedness stays
+    # high (the known gap this guard exists to catch)
+    response = service.ask("completely unrelated topic")
+
+    assert response.answer == ABSTENTION_MESSAGE
+    assert response.guardrail_flags["low_retrieval_relevance"] is True
+
+
+def test_high_retrieval_relevance_does_not_trigger_abstention(tmp_path):
+
+    service = _service_with_retrieval_relevance_guard(tmp_path)
+
+    response = service.ask("MARKER how many leave days")
+
+    assert response.guardrail_flags["low_retrieval_relevance"] is False
+    assert "10 days" in response.answer
+
+
+def test_retrieval_relevance_guard_disabled_by_default(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("MARKER Contractors receive 10 days of leave.", encoding="utf-8")
+    service = RAGService(embedder=_MarkerEmbedder())
+    service.ingest([str(file_path)])
+
+    response = service.ask("completely unrelated topic")
+
+    assert "low_retrieval_relevance" not in response.guardrail_flags
+
+
+def test_should_abstain_combines_hallucination_and_low_relevance_signals():
+
+    service = RAGService()
+
+    assert service._should_abstain({"hallucination": True, "low_retrieval_relevance": False}) is True
+    assert service._should_abstain({"hallucination": False, "low_retrieval_relevance": True}) is True
+    assert service._should_abstain({"hallucination": False, "low_retrieval_relevance": False}) is False
+    assert service._should_abstain({}) is False

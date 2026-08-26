@@ -82,6 +82,9 @@ class _FakeSentenceTransformer:
         return 384
 
     def encode(self, text, normalize_embeddings: bool = True, **kwargs) -> _FakeEmbeddingTensor:
+        if isinstance(text, list):
+            return _FakeEmbeddingTensor([self._hashing.embed(t) for t in text])
+
         return _FakeEmbeddingTensor(self._hashing.embed(text))
 
 

@@ -18,6 +18,15 @@ def test_build_rag_service_defaults_to_local_runtime():
     assert isinstance(service, RAGService)
 
 
+def test_build_rag_service_defaults_to_in_memory_vector_store():
+
+    from rag.vector_store.in_memory_store import InMemoryVectorStore
+
+    service = build_rag_service(Settings())
+
+    assert isinstance(service.vector_store, InMemoryVectorStore)
+
+
 def test_build_rag_service_restricts_ingest_to_the_configured_directory(tmp_path):
 
     settings = Settings(ingest_allowed_dir=str(tmp_path))
@@ -102,12 +111,114 @@ def test_build_rag_service_rejects_unwired_embedding_provider():
         build_rag_service(settings)
 
 
-def test_build_rag_service_rejects_unwired_provider():
+@patch("app.service_factory.JinaEmbedder")
+def test_build_rag_service_wires_jina_embedder(mock_embedder_class):
+
+    settings = Settings(
+        embedding_provider="jina",
+        jina_api_key="jina-key",
+        jina_embedding_model="jina-embeddings-v3",
+        jina_embedding_dimensions=1024
+    )
+
+    service = build_rag_service(settings)
+
+    mock_embedder_class.assert_called_once_with(
+        api_key="jina-key",
+        model_name="jina-embeddings-v3",
+        dimensions=1024,
+        timeout=settings.embedding_timeout_seconds,
+        max_retries=settings.embedding_max_retries
+    )
+    assert service.embedder is mock_embedder_class.return_value
+
+
+def test_build_rag_service_requires_api_key_for_jina():
+
+    settings = Settings(embedding_provider="jina")
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
+@patch("app.service_factory.CohereEmbedder")
+def test_build_rag_service_wires_cohere_embedder(mock_embedder_class):
+
+    settings = Settings(
+        embedding_provider="cohere",
+        cohere_api_key="cohere-key",
+        cohere_embedding_model="embed-english-v3.0",
+        cohere_embedding_dimensions=1024
+    )
+
+    service = build_rag_service(settings)
+
+    mock_embedder_class.assert_called_once_with(
+        api_key="cohere-key",
+        model_name="embed-english-v3.0",
+        dimensions=1024,
+        timeout=settings.embedding_timeout_seconds,
+        max_retries=settings.embedding_max_retries
+    )
+    assert service.embedder is mock_embedder_class.return_value
+
+
+def test_build_rag_service_requires_api_key_for_cohere():
+
+    settings = Settings(embedding_provider="cohere")
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
+def test_build_rag_service_rejects_unwired_vector_store_provider():
+
+    settings = Settings(vector_store_provider="pinecone")
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
+def test_build_rag_service_requires_host_for_opensearch_provider():
 
     settings = Settings(vector_store_provider="opensearch")
 
     with pytest.raises(ServiceConfigurationError):
         build_rag_service(settings)
+
+
+@patch("app.service_factory.OpenSearchVectorStore")
+@patch("app.service_factory.build_opensearch_client")
+def test_build_rag_service_wires_opensearch_provider(mock_build_client, mock_store_class):
+
+    settings = Settings(
+        vector_store_provider="opensearch",
+        embedding_provider="hashing",
+        opensearch_host="search-domain.us-east-1.es.amazonaws.com",
+        opensearch_index="rag-chunks",
+        aws_region="us-east-1"
+    )
+
+    service = build_rag_service(settings)
+
+    mock_build_client.assert_called_once_with(
+        host="search-domain.us-east-1.es.amazonaws.com",
+        region="us-east-1",
+        port=settings.opensearch_port,
+        use_ssl=settings.opensearch_use_ssl,
+        verify_certs=settings.opensearch_verify_certs,
+        connect_timeout=settings.opensearch_connect_timeout,
+        max_retries=settings.opensearch_max_retries
+    )
+    mock_store_class.assert_called_once_with(
+        client=mock_build_client.return_value,
+        index_name="rag-chunks",
+        embedding_dimensions=service.embedder.dimensions
+    )
+    mock_store_class.return_value.ensure_index.assert_called_once_with(
+        service.embedder.dimensions
+    )
+    assert service.vector_store is mock_store_class.return_value
 
 
 @patch("app.service_factory.OpenAICompatibleAnswerer")
@@ -142,8 +253,8 @@ def test_build_rag_service_requires_llm_credentials_for_openai_compatible():
 
 
 @patch("app.service_factory.BedrockAnswerer")
-@patch("app.service_factory.boto3")
-def test_build_rag_service_wires_bedrock_provider(mock_boto3, mock_answerer_class):
+@patch("app.service_factory.build_boto3_client")
+def test_build_rag_service_wires_bedrock_provider(mock_build_client, mock_answerer_class):
 
     settings = Settings(
         generation_provider="bedrock",
@@ -153,11 +264,15 @@ def test_build_rag_service_wires_bedrock_provider(mock_boto3, mock_answerer_clas
 
     service = build_rag_service(settings)
 
-    mock_boto3.client.assert_called_once_with("bedrock-runtime", region_name="us-west-2")
+    mock_build_client.assert_called_once_with(
+        "bedrock-runtime",
+        region_name="us-west-2",
+        read_timeout=settings.llm_timeout_seconds
+    )
     assert isinstance(service, RAGService)
     assert service.answerer is mock_answerer_class.return_value
     mock_answerer_class.assert_called_once_with(
-        client=mock_boto3.client.return_value,
+        client=mock_build_client.return_value,
         model_id="anthropic.claude-3-haiku-20240307-v1:0",
         max_tokens=settings.llm_max_tokens,
         temperature=settings.llm_temperature
@@ -165,8 +280,8 @@ def test_build_rag_service_wires_bedrock_provider(mock_boto3, mock_answerer_clas
 
 
 @patch("app.service_factory.BedrockAnswerer")
-@patch("app.service_factory.boto3")
-def test_build_rag_service_wires_fallback_answerer_when_configured(mock_boto3, mock_answerer_class):
+@patch("app.service_factory.build_boto3_client")
+def test_build_rag_service_wires_fallback_answerer_when_configured(mock_build_client, mock_answerer_class):
 
     settings = Settings(
         generation_provider="bedrock",
@@ -263,6 +378,72 @@ def test_build_rag_service_wires_reranker_when_enabled(mock_reranker_class):
     )
 
 
+def test_build_rag_service_rejects_unwired_reranker_provider():
+
+    settings = Settings(reranker_enabled=True, reranker_provider="not_a_real_provider")
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
+@patch("app.service_factory.JinaReranker")
+def test_build_rag_service_wires_jina_reranker(mock_reranker_class):
+
+    settings = Settings(
+        reranker_enabled=True,
+        reranker_provider="jina",
+        jina_api_key="jina-key",
+        jina_rerank_model="jina-reranker-v2-base-multilingual"
+    )
+
+    service = build_rag_service(settings)
+
+    mock_reranker_class.assert_called_once_with(
+        api_key="jina-key",
+        model_name="jina-reranker-v2-base-multilingual",
+        timeout=settings.reranker_timeout_seconds,
+        max_retries=settings.reranker_max_retries
+    )
+    assert service.reranker is mock_reranker_class.return_value
+
+
+def test_build_rag_service_requires_api_key_for_jina_reranker():
+
+    settings = Settings(reranker_enabled=True, reranker_provider="jina")
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
+@patch("app.service_factory.CohereReranker")
+def test_build_rag_service_wires_cohere_reranker(mock_reranker_class):
+
+    settings = Settings(
+        reranker_enabled=True,
+        reranker_provider="cohere",
+        cohere_api_key="cohere-key",
+        cohere_rerank_model="rerank-english-v3.0"
+    )
+
+    service = build_rag_service(settings)
+
+    mock_reranker_class.assert_called_once_with(
+        api_key="cohere-key",
+        model_name="rerank-english-v3.0",
+        timeout=settings.reranker_timeout_seconds,
+        max_retries=settings.reranker_max_retries
+    )
+    assert service.reranker is mock_reranker_class.return_value
+
+
+def test_build_rag_service_requires_api_key_for_cohere_reranker():
+
+    settings = Settings(reranker_enabled=True, reranker_provider="cohere")
+
+    with pytest.raises(ServiceConfigurationError):
+        build_rag_service(settings)
+
+
 def test_build_rag_service_disables_guardrails_when_guardrails_disabled():
 
     settings = Settings(guardrails_enabled=False)
@@ -276,6 +457,8 @@ def test_build_rag_service_wires_guardrails_when_enabled():
 
     settings = Settings(
         guardrails_enabled=True,
+        prompt_injection_guard_enabled=False,
+        indirect_prompt_injection_guard_enabled=False,
         pii_guard_enabled=True,
         hallucination_guard_enabled=False,
         groundedness_threshold=0.75
@@ -292,6 +475,8 @@ def test_build_rag_service_wires_hallucination_guard_with_configured_threshold()
 
     settings = Settings(
         guardrails_enabled=True,
+        prompt_injection_guard_enabled=False,
+        indirect_prompt_injection_guard_enabled=False,
         pii_guard_enabled=False,
         hallucination_guard_enabled=True,
         groundedness_threshold=0.75
@@ -308,10 +493,46 @@ def test_build_rag_service_wires_hallucination_guard_with_configured_threshold()
     assert hallucination_guards[0].threshold == 0.75
 
 
+def test_build_rag_service_does_not_wire_retrieval_relevance_guard_by_default():
+
+    settings = Settings(guardrails_enabled=True)
+
+    service = build_rag_service(settings)
+
+    guardrail_names = [g.name for g in service.guardrail_manager.guardrails]
+
+    assert "retrieval_relevance_guard" not in guardrail_names
+
+
+def test_build_rag_service_wires_retrieval_relevance_guard_with_configured_threshold():
+
+    settings = Settings(
+        guardrails_enabled=True,
+        prompt_injection_guard_enabled=False,
+        indirect_prompt_injection_guard_enabled=False,
+        pii_guard_enabled=False,
+        hallucination_guard_enabled=False,
+        retrieval_relevance_guard_enabled=True,
+        retrieval_relevance_threshold=0.72
+    )
+
+    service = build_rag_service(settings)
+
+    guards = [
+        g for g in service.guardrail_manager.guardrails
+        if g.name == "retrieval_relevance_guard"
+    ]
+
+    assert len(guards) == 1
+    assert guards[0].threshold == 0.72
+
+
 @patch("app.service_factory.PresidioPIIGuard")
 def test_build_rag_service_wires_presidio_when_enabled(mock_presidio_class):
 
     settings = Settings(
+        prompt_injection_guard_enabled=False,
+        indirect_prompt_injection_guard_enabled=False,
         pii_guard_enabled=False,
         hallucination_guard_enabled=False,
         presidio_pii_guard_enabled=True,
@@ -331,6 +552,8 @@ def test_build_rag_service_wires_presidio_when_enabled(mock_presidio_class):
 def test_build_rag_service_skips_presidio_when_disabled():
 
     settings = Settings(
+        prompt_injection_guard_enabled=False,
+        indirect_prompt_injection_guard_enabled=False,
         pii_guard_enabled=False,
         hallucination_guard_enabled=False,
         presidio_pii_guard_enabled=False
@@ -345,6 +568,8 @@ def test_build_rag_service_skips_presidio_when_disabled():
 def test_build_rag_service_wires_nli_when_enabled(mock_nli_class):
 
     settings = Settings(
+        prompt_injection_guard_enabled=False,
+        indirect_prompt_injection_guard_enabled=False,
         pii_guard_enabled=False,
         hallucination_guard_enabled=False,
         nli_hallucination_enabled=True,
@@ -365,6 +590,8 @@ def test_build_rag_service_wires_nli_when_enabled(mock_nli_class):
 def test_build_rag_service_wires_llm_judge_when_enabled(mock_judge_class):
 
     settings = Settings(
+        prompt_injection_guard_enabled=False,
+        indirect_prompt_injection_guard_enabled=False,
         pii_guard_enabled=False,
         hallucination_guard_enabled=False,
         llm_judge_enabled=True,
@@ -481,3 +708,97 @@ def test_build_rag_service_shares_flags_from_platform_manager():
     )
 
     assert service.feature_flags is platform_manager.feature_flags
+
+
+def test_build_s3_document_store_returns_none_when_bucket_not_set():
+
+    from app.service_factory import build_s3_document_store
+
+    assert build_s3_document_store(Settings(s3_bucket=None)) is None
+
+
+@patch("app.service_factory.build_boto3_client")
+def test_build_s3_document_store_builds_a_real_store_when_bucket_set(mock_build_client):
+
+    from app.service_factory import build_s3_document_store
+    from ingestion.s3_document_store import S3DocumentStore
+
+    store = build_s3_document_store(Settings(s3_bucket="my-bucket", aws_region="us-east-1"))
+
+    assert isinstance(store, S3DocumentStore)
+    assert store.bucket_name == "my-bucket"
+    mock_build_client.assert_called_once_with("s3", region_name="us-east-1")
+
+
+def test_build_ingestion_job_store_returns_none_when_bucket_not_set():
+
+    from app.service_factory import build_ingestion_job_store
+
+    assert build_ingestion_job_store(Settings(s3_bucket=None)) is None
+
+
+@patch("app.service_factory.build_boto3_client")
+def test_build_ingestion_job_store_builds_when_bucket_set(mock_build_client):
+
+    from app.service_factory import build_ingestion_job_store
+    from mlops.ingestion_job_store import IngestionJobStore
+
+    store = build_ingestion_job_store(Settings(s3_bucket="my-bucket"))
+
+    assert isinstance(store, IngestionJobStore)
+
+
+def test_build_sqs_client_returns_none_when_queue_url_not_set():
+
+    from app.service_factory import build_sqs_client
+
+    assert build_sqs_client(Settings(sqs_queue_url=None)) is None
+
+
+@patch("app.service_factory.build_boto3_client")
+def test_build_sqs_client_builds_when_queue_url_set(mock_build_client):
+
+    from app.service_factory import build_sqs_client
+
+    build_sqs_client(Settings(sqs_queue_url="https://sqs.example/queue", aws_region="us-east-1"))
+
+    mock_build_client.assert_called_once_with("sqs", region_name="us-east-1")
+
+
+def test_build_sqs_ingestion_worker_returns_none_when_async_disabled():
+
+    from app.service_factory import build_sqs_ingestion_worker
+
+    settings = Settings(async_ingestion_enabled=False, sqs_queue_url="https://sqs.example/queue")
+    worker = build_sqs_ingestion_worker(settings, rag_service=None, s3_store=None, job_store=None, sqs_client=object())
+
+    assert worker is None
+
+
+def test_build_sqs_ingestion_worker_returns_none_when_no_sqs_client():
+
+    from app.service_factory import build_sqs_ingestion_worker
+
+    settings = Settings(async_ingestion_enabled=True, sqs_queue_url="https://sqs.example/queue")
+    worker = build_sqs_ingestion_worker(settings, rag_service=None, s3_store=None, job_store=None, sqs_client=None)
+
+    assert worker is None
+
+
+def test_build_sqs_ingestion_worker_builds_when_fully_configured():
+
+    from app.service_factory import build_sqs_ingestion_worker
+    from ingestion.sqs_ingestion_worker import SQSIngestionWorker
+
+    settings = Settings(async_ingestion_enabled=True, sqs_queue_url="https://sqs.example/queue")
+    fake_rag_service = build_rag_service(Settings())
+    worker = build_sqs_ingestion_worker(
+        settings,
+        rag_service=fake_rag_service,
+        s3_store=object(),
+        job_store=object(),
+        sqs_client=object()
+    )
+
+    assert isinstance(worker, SQSIngestionWorker)
+    assert worker.queue_url == "https://sqs.example/queue"

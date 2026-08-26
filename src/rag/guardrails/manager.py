@@ -14,6 +14,7 @@ from rag.guardrails.base import GuardrailFinding
 from rag.guardrails.base import GuardrailStage
 from rag.guardrails.hallucination_detector import HallucinationDetector
 from rag.guardrails.pii_guard import PIIGuard
+from rag.guardrails.retrieval_relevance_guard import RetrievalRelevanceGuard
 from rag.guardrails.telemetry import record_action
 from rag.guardrails.telemetry import record_finding
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
@@ -54,7 +55,9 @@ class GuardrailManager:
         embedder: Embedder | None = None,
         pii_enabled: bool = True,
         hallucination_enabled: bool = True,
-        groundedness_threshold: float = 0.60
+        groundedness_threshold: float = 0.60,
+        retrieval_relevance_enabled: bool = False,
+        retrieval_relevance_threshold: float | None = None
     ) -> "GuardrailManager":
         guardrails: list[Guardrail] = []
 
@@ -66,6 +69,20 @@ class GuardrailManager:
                 HallucinationDetector(
                     threshold=groundedness_threshold,
                     embedder=embedder
+                )
+            )
+
+        if retrieval_relevance_enabled:
+            # Off by default (unlike PII/hallucination) - real, evidence-
+            # calibrated numbers only exist for a genuine dense embedder
+            # (see RetrievalRelevanceGuard's module docstring); a caller
+            # opting in with HashingEmbedder gets a real but noisy signal
+            # that does not reliably separate relevant from irrelevant
+            # queries - verified against the real golden dataset.
+            guardrails.append(
+                RetrievalRelevanceGuard(
+                    embedder=embedder,
+                    threshold=retrieval_relevance_threshold
                 )
             )
 
@@ -169,6 +186,10 @@ class GuardrailManager:
                 flags["hallucination"] = finding.triggered
                 if "groundedness_score" in finding.metadata:
                     flags["groundedness"] = finding.metadata["groundedness_score"]
+            elif finding.guardrail_name == "retrieval_relevance_guard":
+                flags["low_retrieval_relevance"] = finding.triggered
+                if "retrieval_relevance_score" in finding.metadata:
+                    flags["retrieval_relevance"] = finding.metadata["retrieval_relevance_score"]
             else:
                 flags[finding.guardrail_name] = finding.triggered
 

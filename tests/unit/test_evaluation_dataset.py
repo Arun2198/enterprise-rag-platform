@@ -144,5 +144,5 @@ def test_real_golden_dataset_loads_and_validates():
     dataset = load_dataset("evaluation/golden_dataset.json")
 
     assert dataset.name == "ai-rmf-1stdraft"
-    assert len(dataset.queries) == 20
+    assert len(dataset.queries) == 24
     assert dataset.source_documents == ["sample_documents/AI-RMF-1stdraft.pdf"]

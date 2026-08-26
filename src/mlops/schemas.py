@@ -48,6 +48,15 @@ class Permission(str, Enum):
     MANAGE_SECRETS = "manage_secrets"
     TRIGGER_BACKUP = "trigger_backup"
     TRIGGER_RESTORE = "trigger_restore"
+    # RAG API-layer permissions (query/ingest/delete) - distinct from the
+    # MLOps-platform permissions above, added so the API's /ask, /ingest,
+    # and document-delete endpoints have something real to authorize
+    # against rather than reusing platform-operation permissions that
+    # don't semantically fit.
+    QUERY = "query"
+    UPLOAD_DOCUMENT = "upload_document"
+    DELETE_DOCUMENT = "delete_document"
+    DEBUG_QUERY = "debug_query"
 
 
 @dataclass(frozen=True)

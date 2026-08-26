@@ -1,5 +1,3 @@
-import math
-
 from rag.chunking.chunk import Chunk
 from rag.retrieval.hybrid_retrieval import HybridRetriever
 from rag.vector_store.in_memory_store import SearchResult
@@ -7,22 +5,30 @@ from rag.vector_store.in_memory_store import SearchResult
 
 class _StubEmbedder:
 
+    dimensions = 2
+
     def embed(self, text):
         return [1.0, 0.0]
 
 
 class _StubVectorStore:
 
-    def __init__(self, results):
-        self.results = results
-        self.calls = []
+    def __init__(self, dense_results=None, lexical_results=None):
+        self.dense_results = dense_results or []
+        self.lexical_results = lexical_results or []
+        self.search_calls = []
+        self.lexical_calls = []
 
     def search(self, query_embedding, top_k=5, metadata_filter=None):
-        self.calls.append({"top_k": top_k, "metadata_filter": metadata_filter})
-        return self.results[:top_k]
+        self.search_calls.append({"top_k": top_k, "metadata_filter": metadata_filter})
+        return self.dense_results[:top_k]
+
+    def search_lexical(self, query_text, top_k=5, metadata_filter=None):
+        self.lexical_calls.append({"top_k": top_k, "metadata_filter": metadata_filter})
+        return self.lexical_results[:top_k]
 
 
-def _chunk(chunk_id: str, text: str) -> Chunk:
+def _chunk(chunk_id: str, text: str = "text") -> Chunk:
     return Chunk(
         chunk_id=chunk_id,
         document_id="doc",
@@ -33,121 +39,142 @@ def _chunk(chunk_id: str, text: str) -> Chunk:
     )
 
 
-def test_fuses_vector_and_keyword_scores_with_default_weights():
+def test_a_chunk_found_by_both_methods_outranks_one_found_by_only_one():
 
-    store = _StubVectorStore([
-        SearchResult(chunk=_chunk("doc:0", "contractors receive leave"), score=0.8)
-    ])
-    retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
-
-    results = retriever.retrieve("contractors leave", top_k=5)
-
-    # keyword_score: full overlap (2/2 tokens) -> log1p(2)/log1p(2) = 1.0
-    # fused: 0.65 * 0.8 + 0.35 * 1.0
-    expected = 0.65 * 0.8 + 0.35 * 1.0
-    assert math.isclose(results[0].vector_score, 0.8)
-    assert math.isclose(results[0].keyword_score, 1.0)
-    assert math.isclose(results[0].score, expected)
-
-
-def test_custom_weights_change_the_fused_score():
-
-    store = _StubVectorStore([
-        SearchResult(chunk=_chunk("doc:0", "contractors receive leave"), score=0.8)
-    ])
-    retriever = HybridRetriever(
-        vector_store=store,
-        embedder=_StubEmbedder(),
-        vector_weight=0.9,
-        keyword_weight=0.1
+    store = _StubVectorStore(
+        dense_results=[
+            SearchResult(chunk=_chunk("doc:0"), score=0.9),
+            SearchResult(chunk=_chunk("doc:1"), score=0.5),
+        ],
+        lexical_results=[
+            SearchResult(chunk=_chunk("doc:1"), score=5.0),
+        ]
     )
-
-    results = retriever.retrieve("contractors leave", top_k=5)
-
-    expected = 0.9 * 0.8 + 0.1 * 1.0
-    assert math.isclose(results[0].score, expected)
-
-
-def test_partial_keyword_overlap_scores_between_zero_and_one():
-
-    store = _StubVectorStore([
-        SearchResult(chunk=_chunk("doc:0", "contractors receive something else"), score=0.5)
-    ])
     retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
 
-    results = retriever.retrieve("contractors leave policy", top_k=5)
+    results = retriever.retrieve("query", top_k=5)
 
-    # 1 of 3 query terms overlaps ("contractors")
-    expected_keyword_score = math.log1p(1) / math.log1p(3)
-    assert math.isclose(results[0].keyword_score, expected_keyword_score)
+    # doc:1 - rank 2 in dense (1/62), rank 1 in lexical (1/61) -> higher RRF
+    # doc:0 - rank 1 in dense only (1/61)
+    assert results[0].chunk.chunk_id == "doc:1"
+    assert results[0].retrieval_method == "both"
+    assert results[1].chunk.chunk_id == "doc:0"
+    assert results[1].retrieval_method == "dense"
 
 
-def test_keyword_score_is_zero_when_query_has_no_alphanumeric_tokens():
+def test_rrf_score_matches_the_formula():
 
-    store = _StubVectorStore([
-        SearchResult(chunk=_chunk("doc:0", "some content here"), score=0.5)
-    ])
+    store = _StubVectorStore(
+        dense_results=[SearchResult(chunk=_chunk("doc:0"), score=0.9)],
+        lexical_results=[]
+    )
+    retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder(), rrf_k=60)
+
+    results = retriever.retrieve("query", top_k=5)
+
+    assert results[0].score == 1.0 / (60 + 1)
+
+
+def test_retrieval_method_dense_only():
+
+    store = _StubVectorStore(
+        dense_results=[SearchResult(chunk=_chunk("doc:0"), score=0.9)],
+        lexical_results=[]
+    )
     retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
 
-    results = retriever.retrieve("!!!", top_k=5)
+    results = retriever.retrieve("query", top_k=5)
 
+    assert results[0].retrieval_method == "dense"
+    assert results[0].vector_score == 0.9
     assert results[0].keyword_score == 0.0
 
 
-def test_results_are_sorted_by_fused_score_descending():
+def test_retrieval_method_bm25_only():
 
-    store = _StubVectorStore([
-        # 0.65 * 0.5 + 0.35 * 0.0 = 0.325
-        SearchResult(chunk=_chunk("doc:0", "irrelevant text here"), score=0.5),
-        # 0.65 * 0.3 + 0.35 * 1.0 = 0.545
-        SearchResult(chunk=_chunk("doc:1", "contractors receive leave"), score=0.3),
-    ])
+    store = _StubVectorStore(
+        dense_results=[],
+        lexical_results=[SearchResult(chunk=_chunk("doc:0"), score=3.2)]
+    )
     retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
 
-    results = retriever.retrieve("contractors leave", top_k=5)
+    results = retriever.retrieve("query", top_k=5)
 
-    assert [r.score for r in results] == sorted([r.score for r in results], reverse=True)
-    # the lower-vector-score-but-full-keyword-overlap chunk still wins
-    # under the default 0.65/0.35 weighting
-    assert results[0].chunk.chunk_id == "doc:1"
+    assert results[0].retrieval_method == "bm25"
+    assert results[0].keyword_score == 3.2
+    assert results[0].vector_score == 0.0
+
+
+def test_rank_is_one_indexed_and_sequential():
+
+    store = _StubVectorStore(
+        dense_results=[
+            SearchResult(chunk=_chunk(f"doc:{i}"), score=1.0 - i * 0.1)
+            for i in range(4)
+        ]
+    )
+    retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
+
+    results = retriever.retrieve("query", top_k=4)
+
+    assert [r.rank for r in results] == [1, 2, 3, 4]
 
 
 def test_results_are_truncated_to_top_k():
 
-    store = _StubVectorStore([
-        SearchResult(chunk=_chunk(f"doc:{i}", "contractors leave"), score=1.0 - i * 0.1)
-        for i in range(10)
-    ])
+    store = _StubVectorStore(
+        dense_results=[
+            SearchResult(chunk=_chunk(f"doc:{i}"), score=1.0 - i * 0.1)
+            for i in range(10)
+        ]
+    )
     retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
 
-    results = retriever.retrieve("contractors leave", top_k=3)
+    results = retriever.retrieve("query", top_k=3)
 
     assert len(results) == 3
 
 
-def test_over_fetches_from_the_vector_store_by_4x_top_k():
+def test_queries_dense_and_lexical_at_their_own_configured_depths():
 
-    store = _StubVectorStore([])
-    retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
+    store = _StubVectorStore()
+    retriever = HybridRetriever(
+        vector_store=store,
+        embedder=_StubEmbedder(),
+        dense_top_k=15,
+        bm25_top_k=25
+    )
 
     retriever.retrieve("query", top_k=5)
 
-    assert store.calls[0]["top_k"] == 20
+    assert store.search_calls[0]["top_k"] == 15
+    assert store.lexical_calls[0]["top_k"] == 25
 
 
-def test_metadata_filter_is_passed_through_to_the_vector_store():
+def test_metadata_filter_is_passed_to_both_searches():
 
-    store = _StubVectorStore([])
+    store = _StubVectorStore()
     retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
 
     retriever.retrieve("query", top_k=5, metadata_filter={"doc_type": "policy"})
 
-    assert store.calls[0]["metadata_filter"] == {"doc_type": "policy"}
+    assert store.search_calls[0]["metadata_filter"] == {"doc_type": "policy"}
+    assert store.lexical_calls[0]["metadata_filter"] == {"doc_type": "policy"}
 
 
-def test_returns_empty_list_when_vector_store_has_no_results():
+def test_returns_empty_list_when_neither_method_has_results():
 
-    store = _StubVectorStore([])
+    store = _StubVectorStore()
     retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder())
 
     assert retriever.retrieve("query", top_k=5) == []
+
+
+def test_custom_rrf_k_changes_the_fused_score():
+
+    store = _StubVectorStore(dense_results=[SearchResult(chunk=_chunk("doc:0"), score=0.9)])
+    retriever = HybridRetriever(vector_store=store, embedder=_StubEmbedder(), rrf_k=10)
+
+    results = retriever.retrieve("query", top_k=5)
+
+    assert results[0].score == 1.0 / (10 + 1)

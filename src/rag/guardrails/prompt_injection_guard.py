@@ -1,4 +1,3 @@
-import re
 from re import Pattern
 
 from rag.guardrails.base import Action
@@ -6,17 +5,7 @@ from rag.guardrails.base import GuardrailContext
 from rag.guardrails.base import GuardrailFinding
 from rag.guardrails.base import GuardrailStage
 from rag.guardrails.base import Severity
-
-DEFAULT_PATTERNS: tuple[Pattern[str], ...] = (
-    re.compile(r"ignore (all |any )?(previous|prior|above) instructions", re.IGNORECASE),
-    re.compile(r"disregard (all |any )?(previous|prior|above) (instructions|rules)", re.IGNORECASE),
-    re.compile(r"you are now (in )?(developer|dan|jailbreak) mode", re.IGNORECASE),
-    re.compile(r"pretend (you are|to be) .*(no rules|unrestricted|without restrictions)", re.IGNORECASE),
-    re.compile(r"reveal (your |the )?(system prompt|system instructions)", re.IGNORECASE),
-    re.compile(r"act as (if )?(you (have|had) no|there (are|were) no) (restrictions|rules|guardrails)", re.IGNORECASE),
-    re.compile(r"\bDAN\b"),
-    re.compile(r"bypass (your |the )?(safety|content) (filters?|guardrails?)", re.IGNORECASE),
-)
+from rag.guardrails.injection_patterns import DEFAULT_PATTERNS
 
 
 class PromptInjectionGuard:

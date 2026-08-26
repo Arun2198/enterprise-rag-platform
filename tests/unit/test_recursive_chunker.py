@@ -1,3 +1,5 @@
+import hashlib
+
 from ingestion.contracts.document import Document
 from rag.chunking.recursive_chunker import RecursiveChunker
 
@@ -86,3 +88,54 @@ def test_heading_immediately_followed_by_body_still_splits_normally():
     sections = {chunk.parent_section for chunk in result.data}
     assert "Leave Policy" in sections
     assert "Travel Policy" in sections
+
+
+def test_content_hash_matches_the_chunk_text():
+
+    document = Document(
+        document_id="doc-1",
+        source="policy.md",
+        document_type="markdown",
+        content="Employees get 20 days of paid leave every year without exception.",
+        metadata={}
+    )
+    chunker = RecursiveChunker(chunk_size=900, chunk_overlap=50, minimum_chunk_size=10)
+
+    result = chunker.chunk(document)
+
+    chunk = result.data[0]
+    assert chunk.content_hash == hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
+
+
+def test_chunking_version_reflects_the_configured_parameters():
+
+    document = Document(
+        document_id="doc-1",
+        source="policy.md",
+        document_type="markdown",
+        content="Some policy content here.",
+        metadata={}
+    )
+    chunker = RecursiveChunker(chunk_size=500, chunk_overlap=50, minimum_chunk_size=20)
+
+    result = chunker.chunk(document)
+
+    assert result.data[0].chunking_version == "recursive:500:50:20"
+
+
+def test_different_chunking_parameters_produce_different_chunking_versions():
+
+    document = Document(
+        document_id="doc-1",
+        source="policy.md",
+        document_type="markdown",
+        content="Some policy content here.",
+        metadata={}
+    )
+    chunker_a = RecursiveChunker(chunk_size=500, chunk_overlap=50, minimum_chunk_size=20)
+    chunker_b = RecursiveChunker(chunk_size=900, chunk_overlap=120, minimum_chunk_size=80)
+
+    version_a = chunker_a.chunk(document).data[0].chunking_version
+    version_b = chunker_b.chunk(document).data[0].chunking_version
+
+    assert version_a != version_b

@@ -67,7 +67,18 @@ jobs:
               {"name": "AWS_REGION", "value": "${{ env.AWS_REGION }}"},
               {"name": "BEDROCK_MODEL_ID", "value": "arn:aws:bedrock:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0"},
               {"name": "LLM_BASE_URL", "value": "https://models.github.ai/inference"},
-              {"name": "LLM_MODEL_NAME", "value": "openai/gpt-4o-mini"}
+              {"name": "LLM_MODEL_NAME", "value": "openai/gpt-4o-mini"},
+              {"name": "VECTOR_STORE_PROVIDER", "value": "opensearch"},
+              {"name": "OPENSEARCH_HOST", "value": "${{ vars.OPENSEARCH_HOST }}"},
+              {"name": "S3_BUCKET", "value": "${{ vars.S3_BUCKET }}"},
+              {"name": "SQS_QUEUE_URL", "value": "${{ vars.SQS_QUEUE_URL }}"},
+              {"name": "ASYNC_INGESTION_ENABLED", "value": "true"},
+              {"name": "INGEST_ALLOWED_DIR", "value": "sample_documents"},
+              {"name": "AUTH_ENABLED", "value": "true"},
+              {"name": "OIDC_ISSUER", "value": "${{ vars.OIDC_ISSUER }}"},
+              {"name": "OIDC_AUDIENCE", "value": "${{ vars.OIDC_AUDIENCE }}"},
+              {"name": "OIDC_JWKS_URL", "value": "${{ vars.OIDC_JWKS_URL }}"},
+              {"name": "RETRIEVAL_RELEVANCE_GUARD_ENABLED", "value": "true"}
             ]
           secrets: |
             [

@@ -92,6 +92,9 @@ silently. Key variables:
 | `EMBEDDING_MODEL_NAME` | `BAAI/bge-base-en-v1.5` | |
 | `GENERATION_PROVIDER` | `extractive` | or `openai_compatible`, `bedrock` |
 | `GENERATION_FALLBACK_PROVIDER` | unset | wraps the primary provider in `FallbackAnswerer` |
+| `VECTOR_STORE_PROVIDER` | `memory` | or `opensearch` (requires `OPENSEARCH_HOST`) |
+| `OPENSEARCH_HOST` | unset | e.g. `search-domain.us-east-1.es.amazonaws.com`, no scheme/path |
+| `OPENSEARCH_INDEX` | `enterprise-rag-chunks` | created automatically on startup if missing |
 | `RERANKER_ENABLED` | `true` | |
 | `GUARDRAILS_ENABLED` | `true` | master switch; individual guards have their own flags |
 | `INGEST_ALLOWED_DIR` | `sample_documents` | `/ingest` rejects any path outside this directory |

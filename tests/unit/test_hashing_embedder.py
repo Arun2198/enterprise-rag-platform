@@ -95,3 +95,19 @@ def test_identical_text_has_cosine_similarity_of_one():
     vector = embedder.embed("employees receive twenty days of paid leave")
 
     assert math.isclose(_cosine(vector, vector), 1.0, abs_tol=1e-9)
+
+
+def test_embed_batch_matches_individual_embed_calls():
+
+    embedder = HashingEmbedder()
+
+    batch = embedder.embed_batch(["first text", "second text"])
+
+    assert batch == [embedder.embed("first text"), embedder.embed("second text")]
+
+
+def test_embed_batch_of_empty_list_returns_empty_list():
+
+    embedder = HashingEmbedder()
+
+    assert embedder.embed_batch([]) == []

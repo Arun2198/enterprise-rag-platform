@@ -140,6 +140,40 @@ def test_duplicate_chunks_are_handled_without_error(mock_cross_encoder_class):
 
 
 @patch("rag.retrieval.reranker.CrossEncoder")
+def test_rank_is_reassigned_after_reranking(mock_cross_encoder_class):
+
+    mock_cross_encoder_class.return_value.predict.return_value = [0.1, 0.9, 0.5]
+    candidates = [
+        _make_retrieved_chunk("doc:0", "low"),
+        _make_retrieved_chunk("doc:1", "high"),
+        _make_retrieved_chunk("doc:2", "mid")
+    ]
+    reranker = CrossEncoderReranker()
+
+    result = reranker.rerank(query="q", candidates=candidates, top_k=3)
+
+    assert [item.rank for item in result] == [1, 2, 3]
+
+
+@patch("rag.retrieval.reranker.CrossEncoder")
+def test_retrieval_method_is_preserved_through_reranking(mock_cross_encoder_class):
+
+    mock_cross_encoder_class.return_value.predict.return_value = [0.9]
+    candidate = RetrievedChunk(
+        chunk=_make_retrieved_chunk("doc:0", "chunk").chunk,
+        vector_score=0.5,
+        keyword_score=0.5,
+        score=0.5,
+        retrieval_method="both"
+    )
+    reranker = CrossEncoderReranker()
+
+    result = reranker.rerank(query="q", candidates=[candidate], top_k=1)
+
+    assert result[0].retrieval_method == "both"
+
+
+@patch("rag.retrieval.reranker.CrossEncoder")
 def test_negation_example_is_corrected(mock_cross_encoder_class):
 
     # a bi-encoder would likely rank the plain positive statement first;

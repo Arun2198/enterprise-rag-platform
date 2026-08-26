@@ -34,6 +34,12 @@ uv run uvicorn app.main:app --reload --app-dir src
 
 # run retrieval evaluation against the golden dataset
 uv run python evaluation/run_eval.py --dataset evaluation/golden_dataset.json --k 1 3 5 --json
+
+# run robustness evaluation (unanswerable/adversarial queries)
+uv run python evaluation/run_robustness_eval.py --dataset evaluation/robustness_dataset.json
+
+# verify RetrievalRelevanceGuard's calibrated thresholds against a real dense embedder
+uv run python scripts/retrieval_relevance_guard_verification.py
 ```
 
 `pyproject.toml` sets `pythonpath = ["src"]` for pytest, so tests import top-level packages
@@ -48,8 +54,9 @@ generation) is defined as a `Protocol` with a local, dependency-free default imp
 commented-out/injectable production adapters. Nothing is wired to a DI container — swapping
 providers means passing a different instance into `RAGService.__init__`.
 
-**Request flow:** `app/main.py` (FastAPI routes `/ingest`, `/ask`, `/health`) → `RAGService`
-(`app/services/rag_service.py`), which owns the whole pipeline:
+**Request flow:** `app/main.py` (FastAPI routes `/ingest`, `/documents`, `/documents/{id}`,
+`/documents/reindex`, `/documents/jobs/{id}`, `/ask`, `/ask/debug`, `/health`, `/ready`, plus
+`/admin/*`) → `RAGService` (`app/services/rag_service.py`), which owns the whole pipeline:
 
 1. **Ingestion** (`src/ingestion/`) — `IngestionPipeline.ingest_file()` picks a parser via
    `ParserFactory` (dispatches on file extension: `.pdf`/`.docx`/`.md`/`.markdown`), parses to a
@@ -65,7 +72,34 @@ providers means passing a different instance into `RAGService.__init__`.
    the live API, since `/ingest` takes attacker-controlled paths over an unauthenticated HTTP
    endpoint and previously had zero path validation - `{"file_paths": ["CLAUDE.md"]}` or any other
    `.pdf`/`.docx`/`.md` file reachable inside the container would get indexed and readable back via
-   `/ask`.
+   `/ask`. `RAGService.index_document(document)` factors the chunk+embed+index half of `ingest()`
+   out into its own method (shared by the synchronous path above and the async worker below), and
+   `delete_document(document_id)` / `reindex_document(file_path)` give the document lifecycle a
+   real delete and a delete-then-reingest replace (chunk boundaries can shift on any content
+   change, so this is never a partial update) - both live-verified end to end against a real
+   OpenSearch domain (upload, delete confirmed via a direct index count, reindex confirmed
+   non-duplicating).
+
+   **Async ingestion** (`src/ingestion/s3_document_store.py`, `sqs_ingestion_worker.py`,
+   `src/mlops/ingestion_job_store.py`) - an alternative entry point for large/slow documents over
+   HTTP without blocking the request: `POST /documents` (multipart upload) validates the file via
+   `S3DocumentStore.validate()` (extension allowlist, `S3_MAX_FILE_SIZE_MB`), uploads it to
+   `S3_BUCKET` under `S3_RAW_PREFIX`, creates a job record via `IngestionJobStore` (S3-backed,
+   `jobs/` prefix by default - deliberately not a new database, matching the project's own
+   "don't introduce a database without a concrete requirement" rule), and enqueues a message onto
+   `SQS_QUEUE_URL` when async ingestion is on. `SQSIngestionWorker.poll_once()` (long-polled,
+   `wait_time_seconds`) is driven by `main.py`'s `_sqs_ingestion_loop()` the same way the
+   `Scheduler` is - an `asyncio` task in `lifespan`, no separate worker process - and for each
+   message: checks `IngestionJobStore.is_already_processed()` first (idempotent redrive/DLQ
+   retries), downloads via `S3DocumentStore.download_to_temp()`, calls
+   `IngestionPipeline.ingest_from_s3()` (parses the temp file then overrides `document_id`/
+   `source`/`file_name` with the real S3 key, since the parser only sees a meaningless temp
+   filename), indexes via `RAGService.index_document()`, transitions the job
+   RECEIVED→PROCESSING→INDEXED/FAILED, and deletes the SQS message only on success or a
+   detected-duplicate skip - never on failure, so SQS's own redrive policy/DLQ handles retries
+   rather than the worker inventing its own retry logic. `GET /documents/jobs/{job_id}` polls job
+   status. Live-verified end to end against real S3 + SQS + OpenSearch (upload → S3 → SQS → worker
+   → indexed → retrievable via `/ask`, groundedness 0.93 on the round trip).
 2. **Chunking** (`src/rag/chunking/recursive_chunker.py`) — `RecursiveChunker` splits a
    `Document` into `Chunk`s: first by heading-like lines (`_looks_like_heading`), then within each
    section by sentence boundaries up to `chunk_size` with `chunk_overlap`, merging any resulting
@@ -98,14 +132,63 @@ providers means passing a different instance into `RAGService.__init__`.
    instance between retrieval and `HallucinationDetector` (when enabled), rather than each
    independently constructing its own - keeps
    groundedness scoring consistent with whatever embedding space retrieval is actually using.
+   `JinaEmbedder`/`CohereEmbedder` (`EMBEDDING_PROVIDER=jina`/`cohere`, `rag/embeddings/
+   jina_embedder.py`/`cohere_embedder.py`) are API-based alternatives with real retry/backoff
+   (`EMBEDDING_TIMEOUT_SECONDS`/`EMBEDDING_MAX_RETRIES`) - live-verified against the real Jina API
+   this session (1024-dim vectors, `JINA_API_KEY`); Cohere is unit-tested only, not live-verified
+   (no funded key available). `Embedder.dimensions`/`.provider_name`/`.embed_batch()` are part of
+   the Protocol so every implementation (including `HashingEmbedder`) exposes the same shape.
 4. **Vector store** (`src/rag/vector_store/`) — `VectorStore` protocol. `InMemoryVectorStore` does
-   brute-force cosine similarity over an in-process dict, used for local/dev/tests.
-   `OpenSearchVectorStore` is the production adapter; it takes an already-authenticated OpenSearch
-   client injected by the caller (never constructs its own client, to keep the core package free
-   of AWS/OpenSearch imports).
-5. **Retrieval** (`src/rag/retrieval/hybrid_retrieval.py`) — `HybridRetriever` fuses vector cosine
-   similarity with a keyword-overlap score (`vector_weight=0.65` / `keyword_weight=0.35`) over an
-   over-fetched candidate set (`top_k * 4`), then truncates to `top_k`.
+   brute-force cosine similarity over an in-process dict, used for local/dev/tests - this stays the
+   default for direct `RAGService()` construction. `OpenSearchVectorStore` is the production
+   adapter and is now real, config-driven wiring (`VECTOR_STORE_PROVIDER=opensearch`), not just an
+   available-but-unreachable class: `service_factory._build_vector_store()` builds an
+   AWS-SigV4-signed client via `opensearch_client_factory.build_opensearch_client()` (ambient
+   boto3 credentials, never a stored username/password) and calls `store.ensure_index()` once at
+   startup so a fresh domain gets the correct `knn_vector` mapping without a manual provisioning
+   step. `OpenSearchVectorStore` itself now supports real bulk indexing (`add_many` via the
+   `_bulk` API instead of one request per chunk), a genuine BM25 lexical search
+   (`search_lexical()`, a real OpenSearch `match` query - not the regex-overlap approximation
+   `HybridRetriever` still uses for the in-memory path), `delete()`/`delete_by_document()` (no
+   orphaned chunks when a document is removed), `update_metadata()` (partial update, no
+   re-embedding needed), and `health_check()`. Embedding dimension is validated against the
+   index's mapping on every `add`/`add_many`/`search` when `embedding_dimensions` is set (always
+   true for the live-wired path, since it's threaded through from the active `Embedder`).
+5. **Retrieval** (`src/rag/retrieval/`) — `HybridRetriever` runs real, independent dense and BM25
+   searches and fuses them with Reciprocal Rank Fusion (RRF), not a linear blend of raw scores
+   from two incomparable scales. `dense_top_k`/`bm25_top_k` (default 20 each, env
+   `DENSE_TOP_K`/`BM25_TOP_K`) control how deep each individual search goes; `rrf_k` (default 60,
+   env `RRF_K`) is the standard RRF damping constant (`1 / (rrf_k + rank)` per list, summed across
+   lists a chunk appears in). `bm25.py` implements real Okapi BM25 (TF/IDF/length normalization,
+   not word-overlap) - used by `InMemoryVectorStore.search_lexical()` so local/test retrieval
+   scores lexical relevance the same way the OpenSearch-backed path's real `search_lexical()`
+   does, rather than two different algorithms silently diverging between dev and prod. Every
+   `RetrievedChunk` now carries `retrieval_method` (`"dense"` / `"bm25"` / `"both"`, telling you
+   which method(s) actually surfaced this chunk) and `rank` (1-indexed position, reassigned by the
+   reranker when one runs) - both flow through generation and guardrails untouched, and both feed
+   the retrieval-debugging trace below. `Chunk` also carries lineage metadata (`content_hash`,
+   `chunking_version`, `embedding_provider`/`model`/`version`, `document_version`, `indexed_at`)
+   for detecting stale/incompatible chunks across a config change, and document-level
+   authorization fields (`tenant_id`, `access_groups`, `classification`) - `RAGService
+   ._filter_by_access()` enforces the one rule that's actually opinionated here: a chunk with a
+   non-empty `access_groups` is only returned when the caller's own groups (from
+   `AuthenticatedUser.claims["access_groups"]`) intersect it, applied *before* the reranker/prompt
+   ever see the chunk, never retrieve-then-hide. `OpenSearchIndexManager`
+   (`opensearch_index_manager.py`) implements a versioned-index + alias pattern
+   (`{base_name}-v1`, `-v2`, ...) with atomic `_aliases` repoint (`switch_alias`) and `rollback` -
+   zero-downtime reindexing without a manual cutover script. Live-verified against a real
+   OpenSearch domain (version creation, listing, alias switch, rollback all confirmed).
+
+   **Retrieval debugging trace** (`rag/retrieval/trace.py`, `RAGService.ask_with_trace()`) - the
+   normal `ask()` path stays exactly as it was (no tracing overhead for regular callers);
+   `ask_with_trace()` is a parallel method that runs the identical pipeline while also recording a
+   `RetrievalTrace`: raw dense and BM25 candidate lists (not just the fused result), the fused RRF
+   ranking, reranked candidates (when a reranker ran), final chunk ids, generation provider,
+   groundedness, guardrail findings, and per-stage latency in milliseconds (`embedding`,
+   `dense_search`, `bm25_search`, `rrf_fusion`, `rerank`, `generation`, `output_guardrails`,
+   `total`). Exposed via `POST /ask/debug`, gated behind the `DEBUG_QUERY` permission (granted to
+   `ML_ENGINEER`/`DATA_SCIENTIST`/`ADMINISTRATOR`, not `READ_ONLY`/`REVIEWER`) since it surfaces
+   internal scoring detail regular `QUERY`-only callers shouldn't see.
 6. **Reranking** (`src/rag/retrieval/reranker.py`) — `CrossEncoderReranker`, on by default
    (`RERANKER_ENABLED=true`). `RAGService._retrieve()` over-fetches
    `top_k * RERANKER_CANDIDATE_MULTIPLIER` (default multiplier 4) from `HybridRetriever`, then the
@@ -118,6 +201,11 @@ providers means passing a different instance into `RAGService.__init__`.
    falls straight back to a plain `HybridRetriever.retrieve(top_k)` call, unchanged from before
    this stage existed. `tests/unit/conftest.py` patches the underlying `sentence_transformers
    .CrossEncoder` for the whole test session so no unit test ever downloads the real model.
+   `JinaReranker`/`CohereReranker` (`RERANKER_PROVIDER=jina`/`cohere`, `rag/retrieval/
+   jina_reranker.py`/`cohere_reranker.py`) are API-based alternatives with the same
+   `rerank(query, candidates, top_k)` shape - live-verified against the real Jina API this session
+   (correctly ranked a relevant chunk at 0.777 vs an irrelevant one at 0.032); Cohere is
+   unit-tested only, not live-verified.
 7. **Generation** (`src/rag/generation/`) — `Answerer` protocol. `ExtractiveAnswerer` picks the
    best-overlap sentence from retrieved chunks (no LLM call, fully deterministic — grounded by
    construction since it only ever returns retrieved text). `BedrockAnswerer` and
@@ -160,11 +248,72 @@ providers means passing a different instance into `RAGService.__init__`.
    GROUNDEDNESS_THRESHOLD). `AskResponse.guardrail_flags` is built by
    `GuardrailManager._build_flags()`: `pii_detected`/`hallucination`/`groundedness` are flattened
    to match the HLD's example shape, plus a generic `details` list so any other guardrail's
-   findings show up automatically without a schema change. Three more lightweight, dependency-free
-   guardrails exist and implement the same interface but are **not** in the Phase 1 default set -
-   register them explicitly to opt in: `PromptInjectionGuard` (input stage, regex heuristics for
-   injection/jailbreak phrasing), `SecretLeakageGuard` (output stage, API key/token/private-key
-   patterns), `ProfanityGuard` (output stage, small illustrative wordlist). `PolicyEngine`
+   findings show up automatically without a schema change. `GuardrailManager.default()` itself
+   (used only by bare `RAGService()` construction - tests/scripts) still wires only those two;
+   three more lightweight, dependency-free guardrails exist and implement the same interface but
+   need explicit registration to run under `.default()`: `PromptInjectionGuard` (input stage,
+   regex heuristics in `injection_patterns.py` for injection/jailbreak phrasing - "ignore previous
+   instructions", "you are now in developer mode", "reveal your system prompt", DAN-style
+   jailbreaks, secret-exfiltration requests), `SecretLeakageGuard` (output stage, API key/token/
+   private-key patterns), `ProfanityGuard` (output stage, small illustrative wordlist).
+   `IndirectPromptInjectionGuard` (`indirect_prompt_injection_guard.py`, output stage) scans
+   `context.retrieved_chunks` text with the same pattern set - a fundamentally different attack
+   surface than the input-stage guard (malicious text embedded in a *retrieved document*, not the
+   user's query), paired with `rag/generation/prompt.py::build_grounded_prompt`'s explicit
+   `SYSTEM_FRAMING` instructing the model to treat retrieved context as untrusted evidence, not
+   instructions - defense-in-depth, not a claimed-complete solution. For the live app,
+   `service_factory._build_guardrail_manager()` wires `PromptInjectionGuard` and
+   `IndirectPromptInjectionGuard` first, **on by default**
+   (`PROMPT_INJECTION_GUARD_ENABLED`/`INDIRECT_PROMPT_INJECTION_GUARD_ENABLED`, both default
+   `true`), ahead of the Phase 1 pair - live-verified end to end against a real Cognito-
+   authenticated request: four distinct adversarial phrasings (direct injection, jailbreak
+   persona, fake system-message override, developer-mode + secret exfiltration) all correctly
+   blocked (`evaluation/robustness_dataset.json`, `tests/unit/test_robustness_eval.py`).
+
+   **Abstention** (`RAGService.ask()`, `ABSTENTION_MESSAGE`, `abstention_enabled` - default
+   `true`, `ABSTENTION_ENABLED`) - `RAGService._should_abstain()` replaces the user-facing
+   `answer` text with an honest "I don't have enough supporting evidence..." message (sources kept
+   for auditability) when either of two independent, complementary guardrail signals fires -
+   they catch different failure modes, not the same one twice:
+   - `hallucination: true` (`HallucinationDetector`, on by default) - does the answer match its
+     own retrieved evidence. Still only a `WARN`, never an auto-`BLOCK`.
+   - `low_retrieval_relevance: true` (`RetrievalRelevanceGuard`, **off by default** - see below).
+
+   `AskResponse.confidence` is derived from `groundedness`, never the raw retrieval/rerank score -
+   conflating the two was a real bug fixed this session, since a perfect retrieval match can still
+   pair with a fabricated answer.
+
+   **Retrieval-relevance guard** (`rag/guardrails/retrieval_relevance_guard.py`,
+   `RETRIEVAL_RELEVANCE_GUARD_ENABLED` - default `false`, `RETRIEVAL_RELEVANCE_THRESHOLD` optional
+   override) - fixes a real, verified gap that groundedness alone can't catch: it measures whether
+   the answer matches its own retrieved chunks, not whether those chunks are actually relevant to
+   the query. `ExtractiveAnswerer`'s "answer" is always copied verbatim from a chunk, so it's
+   tautologically high-groundedness even for a completely off-topic query against fully irrelevant
+   retrieved content (found by `tests/unit/test_robustness_eval.py` against the real PDF: ~0.85-0.90
+   groundedness for a query about the boiling point of mercury). `RetrievalRelevanceGuard` embeds
+   the query and the top retrieved chunk(s) directly through the shared `Embedder` and compares
+   cosine similarity against an embedder-appropriate threshold
+   (`default_retrieval_relevance_threshold()`) - deliberately *not* the RRF-fused retrieval score
+   (rank-based, not magnitude-based - a top-1-in-both-lists chunk scores nearly the same whether
+   the match is great or terrible) or the vector store's own raw score (not comparable across
+   backends - OpenSearch's k-NN score formula and `InMemoryVectorStore`'s raw cosine aren't on the
+   same scale). Two named threshold defaults, not one universal number, verified by
+   `scripts/retrieval_relevance_guard_verification.py` against `evaluation/golden_dataset.json`'s
+   24 real queries through the actual `RAGService._retrieve()` pipeline (not an idealized
+   full-corpus scan): with a genuine dense embedder (`BAAI/bge-small-en-v1.5`), threshold `0.68`
+   gives **zero false positives** across all 24 real answerable queries and catches 3 of 4 known
+   unanswerable cases. `HashingEmbedder`'s crude vectors don't separate reliably enough for this
+   signal at all - real answerable queries score as low as 0.29, overlapping with unanswerable
+   queries up to 0.43 - so its default threshold (`0.20`) is deliberately set to be a safe no-op
+   (zero false positives, zero catches) rather than a falsely-confident number. This is exactly why
+   the guard defaults to **disabled everywhere** (`GuardrailManager.default()`,
+   `service_factory`) unlike `PIIGuard`/`HallucinationDetector` - and why
+   `tests/unit/test_robustness_eval.py`'s known-gap test still shows the gap: the whole test suite
+   runs on hash-quality embeddings (`tests/unit/conftest.py`'s `SentenceTransformer` mock delegates
+   to `HashingEmbedder` for speed), so the real fix can only be demonstrated with genuine dense
+   embeddings, via the verification script, outside the fast/offline unit-test path. Re-run that
+   script and update `DENSE_EMBEDDER_DEFAULT_THRESHOLD` if `EMBEDDING_MODEL_NAME` changes to a
+   materially different model. `PolicyEngine`
    (`policy.py`) evaluates configurable `PolicyRule`s (condition: guardrail name + min severity
    and/or a metadata threshold) that can escalate — never downgrade — the action a `GuardrailManager`
    would otherwise take; `PolicyEngine.default_policies()` implements the HLD's two example
@@ -218,6 +367,26 @@ providers means passing a different instance into `RAGService.__init__`.
    exporter must not break the guardrail pipeline it's observing. No live Prometheus/Grafana
    server is set up or required by this repo.
 
+**Authentication & authorization** (`app/auth.py`, `mlops/permissions.py`) - generic,
+vendor-neutral OIDC/JWT, not tied to any specific identity provider: `OIDCTokenValidator(issuer,
+audience, jwks_url, role_claim="role", default_role=Role.READ_ONLY)` uses `PyJWKClient` + PyJWT,
+pins `algorithms=["RS256"]` explicitly (rejects `alg: none` attacks), and validates
+issuer/audience/expiry/signature against the IdP's real JWKS endpoint. `AUTH_ENABLED` (default
+`false`) is the master switch; when `true`, `main.py`'s `get_current_user()` dependency requires a
+`Bearer` token on every RBAC-gated route and 401s on a missing/malformed header or a validation
+failure, 403s via `require_permission(permission)` when the token's role lacks it. Live-verified
+end to end this session against a real AWS Cognito User Pool (not synthetic RSA test tokens): a
+real Cognito-issued ID token validated correctly against `OIDCTokenValidator` with the pool's real
+JWKS, and separately through the running app with `AUTH_ENABLED=true` - no token → 401, a
+signature-tampered token → 401, a valid real token → 200 with the full guardrail pipeline running.
+RBAC (`mlops/permissions.py::ROLE_PERMISSIONS`, a static `Role` × `Permission` matrix) covers both
+the pre-existing MLOps-platform permissions and RAG API-layer ones: `QUERY` (every role),
+`UPLOAD_DOCUMENT`/`DELETE_DOCUMENT` (`ML_ENGINEER`, `DATA_SCIENTIST` upload-only,
+`ADMINISTRATOR`), and `DEBUG_QUERY` (`ML_ENGINEER`/`DATA_SCIENTIST`/`ADMINISTRATOR`, gated from
+`READ_ONLY`/`REVIEWER` since it exposes internal retrieval-trace detail). `access_groups` on
+`AskRequest`/`RAGService.ask()` come only from the validated token's own claims, never the
+request body - a caller cannot claim arbitrary access groups for themselves.
+
 **Feature-flagged reranking:** `RAGService` optionally takes a `feature_flags:
 mlops.feature_flags.FeatureFlagManager | None`. When set, `_retrieve()` checks
 `is_enabled_for("cross_encoder_reranker", client_id)` per request before using the reranker (a
@@ -236,11 +405,15 @@ env vars: `VECTOR_STORE_PROVIDER`, `EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, 
 `boto3.client("bedrock-runtime", region_name=settings.aws_region)` and constructs
 `BedrockAnswerer` with it — no injected client needed, since `boto3` resolves credentials
 automatically from whatever IAM role/identity the process is running as, e.g. an ECS task role);
-any other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` only permits its
-local/default value (`memory`) — the `OpenSearchVectorStore` production adapter must still be
-constructed and injected by the caller directly, since it needs an externally-managed
-authenticated OpenSearch client the factory doesn't build; `BedrockAnswerer` doesn't have that
-constraint since `boto3` itself is the authenticated client via ambient IAM credentials.
+any other value raises `ServiceConfigurationError`. `VECTOR_STORE_PROVIDER` accepts `memory`
+(default) or `opensearch` - the latter builds its own authenticated client via
+`opensearch_client_factory.build_opensearch_client()` (ambient boto3 credentials sign every
+request, same pattern as `BedrockAnswerer`) and requires `OPENSEARCH_HOST` to be set
+(`ServiceConfigurationError` otherwise); `OPENSEARCH_INDEX` (default `enterprise-rag-chunks`),
+`OPENSEARCH_PORT` (default `443`), `OPENSEARCH_USE_SSL`/`OPENSEARCH_VERIFY_CERTS` (default
+`true`), `OPENSEARCH_CONNECT_TIMEOUT` (default `5` seconds), and `OPENSEARCH_MAX_RETRIES`
+(default `3`) tune the connection. `AWS_REGION` is reused for SigV4 signing - no separate
+OpenSearch-specific region setting.
 `EMBEDDING_PROVIDER` accepts `sentence_transformer` (default; model name via
 `EMBEDDING_MODEL_NAME`, default `BAAI/bge-base-en-v1.5`) or `hashing` - both are wired, no
 injected client needed since sentence-transformers loads the model itself from HuggingFace on
@@ -263,6 +436,24 @@ ML-backed guardrails: `PRESIDIO_PII_GUARD_ENABLED` / `PRESIDIO_SCORE_THRESHOLD` 
 attach a `FeatureFlagManager` with the `cross_encoder_reranker` flag pre-defined at
 `RERANKER_ROLLOUT_PERCENTAGE` (default `100`, i.e. unchanged behavior); `false` leaves
 `RAGService.feature_flags` as `None`.
+`RERANKER_PROVIDER` accepts `local` (default, `CrossEncoderReranker`), `jina` (requires
+`JINA_API_KEY`), or `cohere` (requires `COHERE_API_KEY`) - same
+`ServiceConfigurationError`-if-misconfigured pattern as generation/vector-store providers.
+`EMBEDDING_PROVIDER` additionally accepts `jina`/`cohere` (`JINA_API_KEY`/`JINA_EMBEDDING_MODEL`/
+`JINA_EMBEDDING_DIMENSIONS`, `COHERE_API_KEY`/`COHERE_EMBEDDING_MODEL`/
+`COHERE_EMBEDDING_DIMENSIONS`; both share `EMBEDDING_TIMEOUT_SECONDS`/`EMBEDDING_MAX_RETRIES`).
+`S3_BUCKET` (unset by default - async ingestion endpoints/worker only build when set) with
+`S3_RAW_PREFIX`/`S3_PROCESSED_PREFIX`/`S3_FAILED_PREFIX` (default `raw/`/`processed/`/`failed/`),
+`S3_MAX_FILE_SIZE_MB` (default `25`), `S3_JOBS_PREFIX` (default `jobs/`) configure
+`S3DocumentStore`/`IngestionJobStore`. `SQS_QUEUE_URL` (unset by default) plus
+`ASYNC_INGESTION_ENABLED` (default `false`) together gate whether `main.py` builds and runs
+`SQSIngestionWorker`'s polling loop; `SQS_POLL_INTERVAL_SECONDS` (default `20`) controls how often
+`_sqs_ingestion_loop()` calls `poll_once()`. `AUTH_ENABLED` (default `false`) plus `OIDC_ISSUER`/
+`OIDC_AUDIENCE`/`OIDC_JWKS_URL`/`OIDC_ROLE_CLAIM` (default role-claim name `role`) configure
+`OIDCTokenValidator` - all three of issuer/audience/jwks_url are required when auth is enabled.
+`ABSTENTION_ENABLED` (default `true`) controls the low-groundedness abstention replacement
+independently of `HALLUCINATION_GUARD_ENABLED` itself (the guard can run and flag without
+abstention rewriting the answer text, if a caller wants the raw flag without the behavior change).
 
 `app/main.py::build_platform_manager(settings)` builds the shared `mlops.manager.PlatformManager`
 for the live app (returns `None` when `MLOPS_ENABLED=false`) and is passed into
@@ -278,7 +469,15 @@ deliberately doesn't provide. Admin endpoints: `GET /admin/feature-flags`, `PATC
 /admin/feature-flags/{name}` (body: `enabled`?/`rollout_percentage`?), `GET
 /admin/scheduler/jobs`, `POST /admin/scheduler/jobs/{job_id}/trigger` (runs a job immediately via
 `Scheduler.trigger()`); all four 404 when `platform_manager` is `None`, with a detail message that
-distinguishes "MLOPS_ENABLED=false" from an actual startup failure (see below).
+distinguishes "MLOPS_ENABLED=false" from an actual startup failure (see below). Document-lifecycle
+and debugging endpoints, each RBAC-gated: `POST /ingest` (`UPLOAD_DOCUMENT`, synchronous, local/
+allowed-dir file paths), `POST /documents` (`UPLOAD_DOCUMENT`, multipart upload, async via S3/SQS
+when configured), `GET /documents/jobs/{job_id}` (`QUERY`), `DELETE /documents/{document_id}`
+(`DELETE_DOCUMENT`), `POST /documents/reindex` (`UPLOAD_DOCUMENT`, body `{"file_path": ...}`),
+`POST /ask` (`QUERY`), `POST /ask/debug` (`DEBUG_QUERY`, same request shape as `/ask`, returns
+`{"response": AskResponse, "trace": RetrievalTraceResponse}`). All document-lifecycle endpoints
+plus async ingestion were live-verified end to end against real S3/SQS/OpenSearch this session
+(see the Ingestion section above).
 
 Both `build_platform_manager()`/`build_rag_service()` calls at module level are wrapped in a
 `try`/`except Exception` - a model download failing, a Bedrock/network error, anything raised
@@ -323,11 +522,49 @@ letting a malformed dataset fail deep inside the runner. `relevant_chunk_ids` ar
 so they're only valid for the exact chunking parameters used to build them. To build a real
 dataset: ingest+chunk the source document with the chunker settings you intend to evaluate with,
 inspect the resulting `chunk_id`/`text` pairs, then hand-pick relevant ids per query (this is
-literally how `evaluation/golden_dataset.json` — 20 queries grounded in
+literally how `evaluation/golden_dataset.json` — 24 queries grounded in
 `sample_documents/AI-RMF-1stdraft.pdf` at `RecursiveChunker()` defaults — was built; don't
-fabricate ids without inspecting real chunks). `tests/unit/test_evaluation_integration.py` runs
-this dataset through the real PDF end-to-end and asserts `recall@10 > 0.5` specifically so a
-future chunker default change that invalidates the ids fails loudly instead of silently.
+fabricate ids without inspecting real chunks). `category` isn't a fixed enum - besides the
+original topic categories (`framework-overview`, `stakeholders`, `trustworthiness`, ...), four
+queries cover retrieval-difficulty categories that don't fit the original set:
+`semantic-paraphrase` (heavily reworded phrasing of an already-answerable question, same
+`relevant_chunk_ids` as its source question - checks the retriever isn't just keyword-matching),
+`numeric` (a specific count/fact the corpus states), `comparison` (a question requiring
+contrasting two things the corpus discusses together) - each individually verified to retrieve its
+relevant chunk within the top 10 before being added, not just passing on aggregate recall.
+`tests/unit/test_evaluation_integration.py` runs this dataset through the real PDF end-to-end and
+asserts `recall@10 > 0.5` specifically so a future chunker default change that invalidates the ids
+fails loudly instead of silently.
+
+**Robustness evaluation (unanswerable/adversarial)** — `src/evaluation/robustness.py`,
+`evaluation/robustness_dataset.json`, `evaluation/run_robustness_eval.py`. Neither "unanswerable"
+nor "adversarial" queries fit the golden-dataset schema above: `relevant_chunk_ids` must be a
+non-empty list (there's structurally no "correct chunk" for a query the corpus doesn't answer),
+and an adversarial query is testing guardrail *behavior*, not retrieval recall against golden ids.
+This is a parallel, smaller harness that checks real `RAGService.ask()` behavior instead:
+`RobustnessCase` (`id`, `query`, `category` - `"unanswerable"` or `"adversarial"`,
+`expect_abstention`?, `expect_block`?) and `run_robustness_eval(rag_service, dataset,
+abstention_message) -> RobustnessReport` (`pass_rate`, per-case `RobustnessResult` with
+`observed_action`: `"block"` / `"abstain"` / `"answered"`, detected the same way
+`app.services.rag_service.RAGService.ask()` itself signals a guardrail block - `sources == []` and
+`confidence == 0.0` together). `evaluation/robustness_dataset.json` has 8 real cases against
+`sample_documents/AI-RMF-1stdraft.pdf`: 4 unanswerable (genuinely off-topic questions like the
+boiling point of mercury or a FIFA World Cup result) and 4 adversarial (direct injection, DAN-style
+jailbreak, fake system-message override, developer-mode + secret-exfiltration framing).
+`tests/unit/test_robustness_eval.py` runs this against the real PDF with a real `RAGService`
+(`PromptInjectionGuard` added explicitly, since bare `RAGService()` only wires the Phase 1
+defaults - see the Guardrails section above): all 4 adversarial cases reliably block
+(**verified**). The 4 unanswerable cases still don't abstain *in this specific test*
+(`test_known_gap_with_hash_quality_embeddings_...`) because it runs on `HashingEmbedder` (like the
+whole test suite), and `RetrievalRelevanceGuard` - the real fix for this gap, see the Guardrails
+section's Abstention/retrieval-relevance-guard entry - is verified safe only with a genuine dense
+embedder, not a crude hash-based one. `scripts/retrieval_relevance_guard_verification.py`
+demonstrates the actual fix working (0 false positives on 24 real golden queries, 3/4 unanswerable
+cases caught) outside the fast/offline unit-test path. `uv run python
+evaluation/run_robustness_eval.py --dataset evaluation/robustness_dataset.json` runs the
+robustness dataset itself against whatever `GENERATION_PROVIDER`/guardrail config is in the
+environment via `service_factory.build_rag_service()` - with `RETRIEVAL_RELEVANCE_GUARD_ENABLED=true`
+and a real embedder configured, expect 3/4 unanswerable cases (plus all 4 adversarial) to pass.
 
 **How to add a metric** — add a `(retrieved_ids: list[str], relevant_ids: set[str], k: int) ->
 float` function to `metrics.py` (per-query) or match `mean_reciprocal_rank`'s shape
@@ -539,6 +776,7 @@ metrics and audit trail always move together.
 - Run app: uv run python main.py
 - Run API: uv run uvicorn app.main:app --reload --app-dir src
 - Run evaluation: uv run python evaluation/run_eval.py --dataset evaluation/golden_dataset.json
+- Run robustness evaluation: uv run python evaluation/run_robustness_eval.py --dataset evaluation/robustness_dataset.json
 
 ## Writing style for all code, comments, docstrings, and docs
 - Write comments and docstrings the way a working engineer actually writes

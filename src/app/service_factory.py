@@ -1,14 +1,18 @@
-import boto3
-
+from app.aws_client_factory import build_boto3_client
 from app.config import Settings
 from app.config import load_settings
 from app.services.rag_service import RERANKER_FLAG_NAME
 from app.services.rag_service import RAGService
+from ingestion.s3_document_store import S3DocumentStore
+from ingestion.sqs_ingestion_worker import SQSIngestionWorker
 from mlops.backup import BackupManager
 from mlops.feature_flags import FeatureFlagManager
+from mlops.ingestion_job_store import IngestionJobStore
 from mlops.manager import PlatformManager
 from rag.embeddings.base import Embedder
+from rag.embeddings.cohere_embedder import CohereEmbedder
 from rag.embeddings.hashing_embedder import HashingEmbedder
+from rag.embeddings.jina_embedder import JinaEmbedder
 from rag.embeddings.sentence_transformer_embedder import SentenceTransformerEmbedder
 from rag.generation.base import Answerer
 from rag.generation.bedrock_answerer import BedrockAnswerer
@@ -17,15 +21,26 @@ from rag.generation.fallback_answerer import FallbackAnswerer
 from rag.generation.openai_compatible_answerer import OpenAICompatibleAnswerer
 from rag.guardrails.base import Guardrail
 from rag.guardrails.hallucination_detector import HallucinationDetector
+from rag.guardrails.indirect_prompt_injection_guard import IndirectPromptInjectionGuard
 from rag.guardrails.llm_judge_hallucination_detector import LLMJudgeHallucinationDetector
 from rag.guardrails.manager import GuardrailManager
 from rag.guardrails.nli_hallucination_detector import NLIHallucinationDetector
 from rag.guardrails.pii_guard import PIIGuard
 from rag.guardrails.presidio_pii_guard import PresidioPIIGuard
+from rag.guardrails.prompt_injection_guard import PromptInjectionGuard
+from rag.guardrails.retrieval_relevance_guard import RetrievalRelevanceGuard
+from rag.retrieval.cohere_reranker import CohereReranker
+from rag.retrieval.jina_reranker import JinaReranker
 from rag.retrieval.reranker import CrossEncoderReranker
+from rag.vector_store.base import VectorStore
+from rag.vector_store.in_memory_store import InMemoryVectorStore
+from rag.vector_store.opensearch_client_factory import build_opensearch_client
+from rag.vector_store.opensearch_store import OpenSearchVectorStore
 
 WIRED_GENERATION_PROVIDERS = ("extractive", "openai_compatible", "bedrock")
-WIRED_EMBEDDING_PROVIDERS = ("hashing", "sentence_transformer")
+WIRED_EMBEDDING_PROVIDERS = ("hashing", "sentence_transformer", "jina", "cohere")
+WIRED_RERANKER_PROVIDERS = ("local", "jina", "cohere")
+WIRED_VECTOR_STORE_PROVIDERS = ("memory", "opensearch")
 
 
 class ServiceConfigurationError(ValueError):
@@ -38,14 +53,8 @@ def build_rag_service(
 ) -> RAGService:
     settings = settings or load_settings()
 
-    if settings.vector_store_provider != "memory":
-        raise ServiceConfigurationError(
-            "Only VECTOR_STORE_PROVIDER=memory is wired for local runtime. "
-            "Inject OpenSearchVectorStore explicitly when deploying with an "
-            "authenticated OpenSearch client."
-        )
-
     embedder = _build_embedder(settings)
+    vector_store = _build_vector_store(settings, embedder)
     answerer = _build_answerer(settings.generation_provider, settings, "GENERATION_PROVIDER")
 
     if settings.generation_fallback_provider:
@@ -54,19 +63,21 @@ def build_rag_service(
         )
         answerer = FallbackAnswerer(primary=answerer, fallback=fallback_answerer)
 
-    reranker = None
-
-    if settings.reranker_enabled:
-        reranker = CrossEncoderReranker(model_name=settings.reranker_model_name)
+    reranker = _build_reranker(settings) if settings.reranker_enabled else None
 
     return RAGService(
         embedder=embedder,
+        vector_store=vector_store,
         answerer=answerer,
         reranker=reranker,
         candidate_multiplier=settings.reranker_candidate_multiplier,
         feature_flags=_build_feature_flags(settings, platform_manager),
         guardrail_manager=_build_guardrail_manager(settings, embedder),
-        ingest_allowed_dir=settings.ingest_allowed_dir
+        ingest_allowed_dir=settings.ingest_allowed_dir,
+        dense_top_k=settings.dense_top_k,
+        bm25_top_k=settings.bm25_top_k,
+        rrf_k=settings.rrf_k,
+        abstention_enabled=settings.abstention_enabled
     )
 
 
@@ -82,7 +93,109 @@ def _build_embedder(
     if settings.embedding_provider == "hashing":
         return HashingEmbedder()
 
+    if settings.embedding_provider == "jina":
+        if not settings.jina_api_key:
+            raise ServiceConfigurationError(
+                "EMBEDDING_PROVIDER=jina requires JINA_API_KEY to be set."
+            )
+
+        return JinaEmbedder(
+            api_key=settings.jina_api_key,
+            model_name=settings.jina_embedding_model,
+            dimensions=settings.jina_embedding_dimensions,
+            timeout=settings.embedding_timeout_seconds,
+            max_retries=settings.embedding_max_retries
+        )
+
+    if settings.embedding_provider == "cohere":
+        if not settings.cohere_api_key:
+            raise ServiceConfigurationError(
+                "EMBEDDING_PROVIDER=cohere requires COHERE_API_KEY to be set."
+            )
+
+        return CohereEmbedder(
+            api_key=settings.cohere_api_key,
+            model_name=settings.cohere_embedding_model,
+            dimensions=settings.cohere_embedding_dimensions,
+            timeout=settings.embedding_timeout_seconds,
+            max_retries=settings.embedding_max_retries
+        )
+
     return SentenceTransformerEmbedder(model_name=settings.embedding_model_name)
+
+
+def _build_reranker(
+    settings: Settings
+):
+    if settings.reranker_provider not in WIRED_RERANKER_PROVIDERS:
+        raise ServiceConfigurationError(
+            f"RERANKER_PROVIDER must be one of {WIRED_RERANKER_PROVIDERS}, "
+            f"got {settings.reranker_provider!r}."
+        )
+
+    if settings.reranker_provider == "local":
+        return CrossEncoderReranker(model_name=settings.reranker_model_name)
+
+    if settings.reranker_provider == "jina":
+        if not settings.jina_api_key:
+            raise ServiceConfigurationError(
+                "RERANKER_PROVIDER=jina requires JINA_API_KEY to be set."
+            )
+
+        return JinaReranker(
+            api_key=settings.jina_api_key,
+            model_name=settings.jina_rerank_model,
+            timeout=settings.reranker_timeout_seconds,
+            max_retries=settings.reranker_max_retries
+        )
+
+    if not settings.cohere_api_key:
+        raise ServiceConfigurationError(
+            "RERANKER_PROVIDER=cohere requires COHERE_API_KEY to be set."
+        )
+
+    return CohereReranker(
+        api_key=settings.cohere_api_key,
+        model_name=settings.cohere_rerank_model,
+        timeout=settings.reranker_timeout_seconds,
+        max_retries=settings.reranker_max_retries
+    )
+
+
+def _build_vector_store(
+    settings: Settings,
+    embedder: Embedder
+) -> VectorStore:
+    if settings.vector_store_provider not in WIRED_VECTOR_STORE_PROVIDERS:
+        raise ServiceConfigurationError(
+            f"VECTOR_STORE_PROVIDER must be one of {WIRED_VECTOR_STORE_PROVIDERS}, "
+            f"got {settings.vector_store_provider!r}."
+        )
+
+    if settings.vector_store_provider == "memory":
+        return InMemoryVectorStore()
+
+    if not settings.opensearch_host:
+        raise ServiceConfigurationError(
+            "VECTOR_STORE_PROVIDER=opensearch requires OPENSEARCH_HOST to be set."
+        )
+
+    client = build_opensearch_client(
+        host=settings.opensearch_host,
+        region=settings.aws_region,
+        port=settings.opensearch_port,
+        use_ssl=settings.opensearch_use_ssl,
+        verify_certs=settings.opensearch_verify_certs,
+        connect_timeout=settings.opensearch_connect_timeout,
+        max_retries=settings.opensearch_max_retries
+    )
+    store = OpenSearchVectorStore(
+        client=client,
+        index_name=settings.opensearch_index,
+        embedding_dimensions=embedder.dimensions
+    )
+    store.ensure_index(embedder.dimensions)
+    return store
 
 
 def _build_answerer(
@@ -115,7 +228,11 @@ def _build_answerer(
         )
 
     return BedrockAnswerer(
-        client=boto3.client("bedrock-runtime", region_name=settings.aws_region),
+        client=build_boto3_client(
+            "bedrock-runtime",
+            region_name=settings.aws_region,
+            read_timeout=settings.llm_timeout_seconds
+        ),
         model_id=settings.bedrock_model_id,
         max_tokens=settings.llm_max_tokens,
         temperature=settings.llm_temperature
@@ -192,6 +309,12 @@ def _build_guardrail_manager(
 
     guardrails: list[Guardrail] = []
 
+    if settings.prompt_injection_guard_enabled:
+        guardrails.append(PromptInjectionGuard())
+
+    if settings.indirect_prompt_injection_guard_enabled:
+        guardrails.append(IndirectPromptInjectionGuard())
+
     if settings.pii_guard_enabled:
         guardrails.append(PIIGuard())
 
@@ -208,6 +331,21 @@ def _build_guardrail_manager(
             HallucinationDetector(
                 threshold=settings.groundedness_threshold,
                 embedder=embedder
+            )
+        )
+
+    if settings.retrieval_relevance_guard_enabled:
+        # Off by default - see RetrievalRelevanceGuard's module docstring
+        # and default_retrieval_relevance_threshold: the auto-picked
+        # threshold is only calibrated against a real dense embedder
+        # (verified zero false positives on the golden dataset with
+        # BAAI/bge-small-en-v1.5); HashingEmbedder does not separate
+        # relevant from irrelevant queries reliably enough for this to be
+        # a safe default everywhere.
+        guardrails.append(
+            RetrievalRelevanceGuard(
+                embedder=embedder,
+                threshold=settings.retrieval_relevance_threshold
             )
         )
 
@@ -239,3 +377,80 @@ def _build_guardrail_manager(
         )
 
     return GuardrailManager(guardrails=guardrails)
+
+
+def build_s3_document_store(
+    settings: Settings
+) -> S3DocumentStore | None:
+    """
+    Returns None (not an error) when S3_BUCKET isn't set - async
+    ingestion is opt-in infrastructure, not something every deployment
+    needs; the synchronous local-file /ingest path works with zero S3
+    configuration at all.
+    """
+    if not settings.s3_bucket:
+        return None
+
+    client = build_boto3_client("s3", region_name=settings.aws_region)
+    return S3DocumentStore(
+        client=client,
+        bucket_name=settings.s3_bucket,
+        raw_prefix=settings.s3_raw_prefix,
+        processed_prefix=settings.s3_processed_prefix,
+        failed_prefix=settings.s3_failed_prefix,
+        max_file_size_bytes=settings.s3_max_file_size_mb * 1024 * 1024
+    )
+
+
+def build_ingestion_job_store(
+    settings: Settings
+) -> IngestionJobStore | None:
+    if not settings.s3_bucket:
+        return None
+
+    client = build_boto3_client("s3", region_name=settings.aws_region)
+    return IngestionJobStore(
+        client=client,
+        bucket_name=settings.s3_bucket,
+        prefix=settings.s3_jobs_prefix
+    )
+
+
+def build_sqs_client(
+    settings: Settings
+):
+    """
+    None when SQS isn't configured. Shared by the upload endpoint
+    (send_message, to enqueue a job) and the ingestion worker
+    (receive_message/delete_message, to process one) - one client, one
+    connection pool, rather than each building its own.
+    """
+    if not settings.sqs_queue_url:
+        return None
+
+    return build_boto3_client("sqs", region_name=settings.aws_region)
+
+
+def build_sqs_ingestion_worker(
+    settings: Settings,
+    rag_service: RAGService,
+    s3_store: S3DocumentStore,
+    job_store: IngestionJobStore,
+    sqs_client
+) -> SQSIngestionWorker | None:
+    """
+    Returns None when async ingestion isn't fully configured
+    (ASYNC_INGESTION_ENABLED + SQS_QUEUE_URL + S3_BUCKET all required) -
+    the API and its synchronous /ingest path work identically either way.
+    """
+    if not settings.async_ingestion_enabled or sqs_client is None:
+        return None
+
+    return SQSIngestionWorker(
+        sqs_client=sqs_client,
+        queue_url=settings.sqs_queue_url,
+        ingestion_pipeline=rag_service.ingestion_pipeline,
+        s3_store=s3_store,
+        job_store=job_store,
+        rag_service=rag_service
+    )

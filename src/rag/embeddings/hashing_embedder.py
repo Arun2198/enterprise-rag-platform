@@ -16,6 +16,8 @@ class HashingEmbedder:
         dimensions: int = 384
     ) -> None:
         self.dimensions = dimensions
+        self.provider_name = "hashing"
+        self.model_name = f"hashing-{dimensions}"
 
     def embed(
         self,
@@ -38,6 +40,12 @@ class HashingEmbedder:
             value / norm
             for value in vector
         ]
+
+    def embed_batch(
+        self,
+        texts: list[str]
+    ) -> list[list[float]]:
+        return [self.embed(text) for text in texts]
 
     def _tokens(
         self,

@@ -1,5 +1,6 @@
 import logging
 import time
+from dataclasses import replace
 
 from sentence_transformers import CrossEncoder
 from torch import sigmoid
@@ -42,7 +43,7 @@ class CrossEncoderReranker:
         # confidence downstream).
         scores = self.model.predict(pairs, activation_fn=sigmoid)
 
-        reranked = sorted(
+        scored = sorted(
             (
                 self._with_score(candidate, float(score))
                 for candidate, score in zip(candidates, scores)
@@ -50,6 +51,10 @@ class CrossEncoderReranker:
             key=lambda item: item.score,
             reverse=True
         )[:top_k]
+        reranked = [
+            replace(item, rank=rank)
+            for rank, item in enumerate(scored, start=1)
+        ]
 
         logger.info(
             "reranking_completed",
@@ -80,5 +85,6 @@ class CrossEncoderReranker:
             chunk=chunk,
             vector_score=candidate.vector_score,
             keyword_score=candidate.keyword_score,
-            score=score
+            score=score,
+            retrieval_method=candidate.retrieval_method
         )

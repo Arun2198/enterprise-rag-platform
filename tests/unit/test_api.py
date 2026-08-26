@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -224,3 +225,461 @@ def test_lifespan_starts_and_cleanly_cancels_the_scheduler_task():
             pass
 
     asyncio.run(run())
+
+
+class _FakeTokenValidator:
+
+    def __init__(self, user=None, error=None):
+        self._user = user
+        self._error = error
+
+    def validate(self, token):
+        if self._error:
+            raise self._error
+
+        return self._user
+
+
+def _enable_auth(monkeypatch, validator):
+    from dataclasses import replace
+
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, auth_enabled=True))
+    monkeypatch.setattr(main_module, "token_validator", validator)
+
+
+def test_ask_returns_401_with_no_authorization_header_when_auth_enabled(monkeypatch):
+
+    _enable_auth(monkeypatch, _FakeTokenValidator())
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "anything"})
+
+    assert response.status_code == 401
+
+
+def test_ask_returns_401_with_a_malformed_authorization_header(monkeypatch):
+
+    _enable_auth(monkeypatch, _FakeTokenValidator())
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "anything"}, headers={"Authorization": "NotBearer xyz"})
+
+    assert response.status_code == 401
+
+
+def test_ask_returns_401_when_the_token_fails_validation(monkeypatch):
+
+    from app.auth import AuthenticationError
+
+    _enable_auth(monkeypatch, _FakeTokenValidator(error=AuthenticationError("bad signature")))
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "anything"}, headers={"Authorization": "Bearer bad-token"})
+
+    assert response.status_code == 401
+    assert "bad signature" in response.json()["detail"]
+
+
+def test_ask_succeeds_with_a_valid_token_that_has_query_permission(monkeypatch, tmp_path):
+
+    from app.auth import AuthenticatedUser
+    from mlops.schemas import Role
+
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Some policy content for the auth test.", encoding="utf-8")
+    TestClient(app).post("/ingest", json={"file_paths": [str(file_path)]})
+
+    _enable_auth(monkeypatch, _FakeTokenValidator(
+        user=AuthenticatedUser(subject="user-1", role=Role.READ_ONLY, claims={})
+    ))
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "policy"}, headers={"Authorization": "Bearer good-token"})
+
+    assert response.status_code == 200
+
+
+def test_ask_debug_returns_403_for_a_read_only_role(monkeypatch, tmp_path):
+
+    from app.auth import AuthenticatedUser
+    from mlops.schemas import Role
+
+    _enable_auth(monkeypatch, _FakeTokenValidator(
+        user=AuthenticatedUser(subject="user-1", role=Role.READ_ONLY, claims={})
+    ))
+    client = TestClient(app)
+
+    response = client.post(
+        "/ask/debug",
+        json={"query": "anything"},
+        headers={"Authorization": "Bearer good-token"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_ask_debug_succeeds_for_ml_engineer_and_matches_ask_shape(monkeypatch, tmp_path):
+
+    from app.auth import AuthenticatedUser
+    from mlops.schemas import Role
+
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    TestClient(app).post("/ingest", json={"file_paths": [str(file_path)]})
+
+    _enable_auth(monkeypatch, _FakeTokenValidator(
+        user=AuthenticatedUser(subject="user-1", role=Role.ML_ENGINEER, claims={})
+    ))
+    client = TestClient(app)
+
+    response = client.post(
+        "/ask/debug",
+        json={"query": "How many leave days do contractors receive?", "top_k": 3},
+        headers={"Authorization": "Bearer good-token"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Contractors receive 10 days of leave" in body["response"]["answer"]
+    trace = body["trace"]
+    assert trace["query"] == "How many leave days do contractors receive?"
+    assert len(trace["dense_candidates"]) >= 1
+    assert len(trace["bm25_candidates"]) >= 1
+    assert "embedding" in trace["stage_timings_ms"]
+    assert "total" in trace["stage_timings_ms"]
+
+
+def test_ask_debug_returns_503_when_rag_service_failed_to_initialize(monkeypatch):
+
+    monkeypatch.setattr(main_module, "rag_service", None)
+    monkeypatch.setattr(main_module, "startup_error", "RuntimeError: model download failed")
+    client = TestClient(app)
+
+    response = client.post("/ask/debug", json={"query": "anything"})
+
+    assert response.status_code == 503
+    assert "model download failed" in response.json()["detail"]
+
+
+def test_ingest_returns_403_for_a_read_only_role(monkeypatch, tmp_path):
+
+    from app.auth import AuthenticatedUser
+    from mlops.schemas import Role
+
+    _enable_auth(monkeypatch, _FakeTokenValidator(
+        user=AuthenticatedUser(subject="user-1", role=Role.READ_ONLY, claims={})
+    ))
+    client = TestClient(app)
+
+    response = client.post(
+        "/ingest",
+        json={"file_paths": [str(tmp_path / "x.md")]},
+        headers={"Authorization": "Bearer good-token"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_ingest_succeeds_for_a_data_scientist_role(monkeypatch, tmp_path):
+
+    from app.auth import AuthenticatedUser
+    from mlops.schemas import Role
+
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Some policy content.", encoding="utf-8")
+
+    _enable_auth(monkeypatch, _FakeTokenValidator(
+        user=AuthenticatedUser(subject="user-1", role=Role.DATA_SCIENTIST, claims={})
+    ))
+    client = TestClient(app)
+
+    response = client.post(
+        "/ingest",
+        json={"file_paths": [str(file_path)]},
+        headers={"Authorization": "Bearer good-token"}
+    )
+
+    assert response.status_code == 200
+
+
+def test_requests_still_succeed_without_a_token_when_auth_is_disabled():
+
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "anything"})
+
+    assert response.status_code == 200
+
+
+def test_ready_endpoint_returns_ready_when_healthy():
+
+    client = TestClient(app)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+def test_ready_returns_503_when_rag_service_failed_to_initialize(monkeypatch):
+
+    monkeypatch.setattr(main_module, "rag_service", None)
+    monkeypatch.setattr(main_module, "startup_error", "RuntimeError: model download failed")
+    client = TestClient(app)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert "model download failed" in response.json()["detail"]
+
+
+def test_ready_returns_503_when_the_vector_store_health_check_fails(monkeypatch):
+
+    class UnhealthyVectorStore:
+        def health_check(self):
+            raise ConnectionError("cluster unreachable")
+
+    monkeypatch.setattr(rag_service, "vector_store", UnhealthyVectorStore())
+    client = TestClient(app)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert "cluster unreachable" in response.json()["detail"]
+
+
+def test_ready_does_not_require_a_health_check_method():
+    """
+    InMemoryVectorStore has no health_check() at all - readiness must not
+    assume every vector store implementation has one.
+    """
+    client = TestClient(app)
+
+    assert not hasattr(rag_service.vector_store, "health_check")
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+
+
+def test_ask_rejects_a_query_over_the_max_length():
+
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "x" * 2001})
+
+    assert response.status_code == 422
+
+
+def test_ask_accepts_a_query_at_the_max_length():
+
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "x" * 2000})
+
+    assert response.status_code == 200
+
+
+def test_ingest_rejects_more_than_the_max_file_paths_per_request():
+
+    client = TestClient(app)
+
+    response = client.post("/ingest", json={"file_paths": [f"file_{i}.md" for i in range(51)]})
+
+    assert response.status_code == 422
+
+
+def test_unhandled_exception_returns_a_sanitized_500_not_the_raw_error(monkeypatch):
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("super secret internal detail: db_password=hunter2")
+
+    monkeypatch.setattr(rag_service, "ask", _boom)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/ask", json={"query": "anything"})
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal server error"}
+    assert "hunter2" not in response.text
+    assert "db_password" not in response.text
+
+
+def test_delete_document_endpoint_removes_chunks(tmp_path, monkeypatch):
+
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
+    file_path = tmp_path / "todelete.md"
+    file_path.write_text("Some content to delete later.", encoding="utf-8")
+    client = TestClient(app)
+    client.post("/ingest", json={"file_paths": [str(file_path)]})
+
+    response = client.delete("/documents/todelete")
+
+    assert response.status_code == 200
+    assert response.json()["document_id"] == "todelete"
+    assert response.json()["deleted_chunks"] >= 1
+
+
+def test_delete_document_endpoint_returns_zero_for_unknown_document():
+
+    client = TestClient(app)
+
+    response = client.delete("/documents/never-existed")
+
+    assert response.status_code == 200
+    assert response.json()["deleted_chunks"] == 0
+
+
+def test_reindex_endpoint_replaces_document(tmp_path, monkeypatch):
+
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
+    file_path = tmp_path / "reindexme.md"
+    file_path.write_text("Original content here for reindexing test.", encoding="utf-8")
+    client = TestClient(app)
+    client.post("/ingest", json={"file_paths": [str(file_path)]})
+
+    file_path.write_text("Updated content here for reindexing test.", encoding="utf-8")
+    response = client.post("/documents/reindex", json={"file_path": str(file_path)})
+
+    assert response.status_code == 200
+    assert response.json()["indexed_documents"] == 1
+
+
+def test_upload_document_returns_503_when_async_ingestion_not_configured():
+
+    client = TestClient(app)
+
+    response = client.post("/documents", files={"file": ("test.md", b"some content", "text/markdown")})
+
+    assert response.status_code == 503
+
+
+def test_get_job_status_returns_503_when_not_configured():
+
+    client = TestClient(app)
+
+    response = client.get("/documents/jobs/some-job-id")
+
+    assert response.status_code == 503
+
+
+class _FakeS3StoreForUpload:
+
+    def __init__(self):
+        self.bucket_name = "fake-bucket"
+        self.uploaded = []
+
+    def upload(self, local_path, document_id, original_filename=None):
+        self.uploaded.append({"local_path": local_path, "document_id": document_id, "filename": original_filename})
+        return f"raw/{document_id}.md"
+
+
+class _FakeJobStoreForUpload:
+
+    def __init__(self):
+        self.jobs = {}
+
+    def create_job(self, job_id, document_id, s3_key):
+        record = {
+            "job_id": job_id, "document_id": document_id, "s3_key": s3_key,
+            "status": "RECEIVED", "error": None,
+            "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"
+        }
+        self.jobs[job_id] = record
+        return record
+
+    def get_job(self, job_id):
+        return self.jobs.get(job_id)
+
+
+def test_upload_document_uploads_to_s3_and_creates_a_job(monkeypatch):
+
+    fake_s3 = _FakeS3StoreForUpload()
+    fake_jobs = _FakeJobStoreForUpload()
+    monkeypatch.setattr(main_module, "s3_document_store", fake_s3)
+    monkeypatch.setattr(main_module, "ingestion_job_store", fake_jobs)
+    monkeypatch.setattr(main_module, "sqs_client", None)
+    client = TestClient(app)
+
+    response = client.post("/documents", files={"file": ("policy.md", b"some content", "text/markdown")})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "RECEIVED"
+    assert body["job_id"] in fake_jobs.jobs
+    assert fake_s3.uploaded[0]["filename"] == "policy.md"
+
+
+def test_upload_document_enqueues_an_sqs_message_when_configured(monkeypatch):
+
+    fake_s3 = _FakeS3StoreForUpload()
+    fake_jobs = _FakeJobStoreForUpload()
+
+    class FakeSQS:
+        def __init__(self):
+            self.sent = []
+        def send_message(self, QueueUrl, MessageBody):
+            self.sent.append({"QueueUrl": QueueUrl, "MessageBody": MessageBody})
+
+    fake_sqs = FakeSQS()
+    monkeypatch.setattr(main_module, "s3_document_store", fake_s3)
+    monkeypatch.setattr(main_module, "ingestion_job_store", fake_jobs)
+    monkeypatch.setattr(main_module, "sqs_client", fake_sqs)
+    monkeypatch.setattr(main_module, "settings", replace_setting(main_module.settings, "sqs_queue_url", "https://sqs.example/queue"))
+    client = TestClient(app)
+
+    response = client.post("/documents", files={"file": ("policy.md", b"some content", "text/markdown")})
+
+    assert response.status_code == 200
+    assert len(fake_sqs.sent) == 1
+    body = json.loads(fake_sqs.sent[0]["MessageBody"])
+    assert body["document_id"] == response.json()["document_id"]
+
+
+def test_upload_document_rejects_a_disallowed_file_type(monkeypatch):
+
+    from ingestion.s3_document_store import S3ValidationError
+
+    class RejectingS3Store:
+        bucket_name = "fake-bucket"
+        def upload(self, local_path, document_id, original_filename=None):
+            raise S3ValidationError("file type not allowed")
+
+    monkeypatch.setattr(main_module, "s3_document_store", RejectingS3Store())
+    monkeypatch.setattr(main_module, "ingestion_job_store", _FakeJobStoreForUpload())
+    client = TestClient(app)
+
+    response = client.post("/documents", files={"file": ("malware.exe", b"x", "application/octet-stream")})
+
+    assert response.status_code == 422
+
+
+def test_get_job_status_returns_the_job_record(monkeypatch):
+
+    fake_jobs = _FakeJobStoreForUpload()
+    fake_jobs.create_job("job-1", "doc-1", "raw/doc-1.md")
+    monkeypatch.setattr(main_module, "ingestion_job_store", fake_jobs)
+    client = TestClient(app)
+
+    response = client.get("/documents/jobs/job-1")
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] == "job-1"
+    assert response.json()["status"] == "RECEIVED"
+
+
+def test_get_job_status_returns_404_for_an_unknown_job(monkeypatch):
+
+    monkeypatch.setattr(main_module, "ingestion_job_store", _FakeJobStoreForUpload())
+    client = TestClient(app)
+
+    response = client.get("/documents/jobs/does-not-exist")
+
+    assert response.status_code == 404
+
+
+def replace_setting(settings, field_name, value):
+    from dataclasses import replace
+    return replace(settings, **{field_name: value})

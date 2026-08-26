@@ -1,3 +1,4 @@
+import hashlib
 import re
 
 from ingestion.contracts.document import Document
@@ -20,6 +21,12 @@ class RecursiveChunker:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.minimum_chunk_size = minimum_chunk_size
+        # Identifies exactly which chunking parameters produced a chunk -
+        # any change to size/overlap/minimum invalidates positional chunk
+        # ids (see evaluation/golden_dataset.json's own documented caveat),
+        # so a chunk carrying the version it was cut under makes that
+        # incompatibility detectable instead of silent.
+        self.chunking_version = f"recursive:{chunk_size}:{chunk_overlap}:{minimum_chunk_size}"
 
     def chunk(
         self,
@@ -51,6 +58,8 @@ class RecursiveChunker:
                         created_at=document.created_at,
                         updated_at=document.updated_at,
                         parent_section=section_title,
+                        content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                        chunking_version=self.chunking_version,
                         metadata={
                             **document.metadata,
                             "document_id": document.document_id,

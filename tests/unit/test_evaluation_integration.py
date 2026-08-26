@@ -20,7 +20,7 @@ def test_golden_dataset_to_report_end_to_end(tmp_path):
     config = BenchmarkConfig(label="integration", k_values=[1, 3, 5, 10])
     ((_, report),) = runner.run([config])
 
-    assert len(report.query_evaluations) == 20
+    assert len(report.query_evaluations) == 24
     # every relevant_chunk_id must exist in the real chunked corpus - if
     # the dataset is stale (rebuilt document, changed chunker defaults)
     # every query would silently score zero instead of failing loudly
