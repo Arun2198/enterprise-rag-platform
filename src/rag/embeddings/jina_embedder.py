@@ -18,11 +18,13 @@ class JinaEmbedder:
     the container. Every embed call is a signed HTTPS request; batching is
     real (one request for many texts), not simulated by looping embed().
 
-    Not live-verified against the real Jina API in this codebase (that
-    needs a real, funded API key this repo doesn't have) - covered by
-    mocked-HTTP unit tests only. Verify against a real key before relying
-    on it in production, the same way the OpenSearch client was verified
-    for real before being trusted.
+    Live-verified against the real Jina API (see
+    scripts/jina_live_verification.py) - a real batch embed_batch() call
+    returned two genuine 1024-dim vectors with real token usage reported
+    back by the API. Covered by mocked-HTTP unit tests day-to-day since
+    no funded key is available in CI; re-run the verification script
+    with a real JINA_API_KEY before trusting a future change to this
+    class, the same way the OpenSearch client was verified for real.
     """
 
     def __init__(

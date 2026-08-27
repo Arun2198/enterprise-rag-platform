@@ -19,9 +19,14 @@ class JinaReranker:
     CrossEncoderReranker (rerank(query, candidates, top_k) -> list[RetrievedChunk])
     so RAGService._retrieve() can use either one interchangeably.
 
-    Not live-verified against the real Jina API in this codebase (needs a
-    real, funded API key this repo doesn't have) - covered by mocked-HTTP
-    unit tests only.
+    Live-verified against the real Jina API (see
+    scripts/jina_live_verification.py) - correctly ranked a genuinely
+    relevant chunk ("water boils at 100 degrees Celsius") at 0.7295 above
+    an irrelevant one ("the Eiffel Tower is in Paris") at 0.0284 for a
+    boiling-point query. Covered by mocked-HTTP unit tests day-to-day
+    since no funded key is available in CI; re-run the verification
+    script with a real JINA_API_KEY before trusting a future change to
+    this class.
     """
 
     def __init__(

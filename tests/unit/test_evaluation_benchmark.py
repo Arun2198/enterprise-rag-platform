@@ -1,9 +1,18 @@
+from unittest.mock import MagicMock
+from unittest.mock import patch
+
+import pytest
+
 from evaluation.benchmark import BenchmarkConfig
 from evaluation.benchmark import BenchmarkRunner
 from evaluation.benchmark import render_comparison_table
 from evaluation.dataset import load_dataset
 from ingestion.ingestion_pipeline import IngestionPipeline
 from rag.chunking.recursive_chunker import RecursiveChunker
+from rag.embeddings.cohere_embedder import CohereEmbedder
+from rag.embeddings.jina_embedder import JinaEmbedder
+from rag.retrieval.cohere_reranker import CohereReranker
+from rag.retrieval.jina_reranker import JinaReranker
 
 
 def _build_dataset_file(tmp_path):
@@ -151,3 +160,165 @@ def test_benchmark_runner_openai_compatible_generation_requires_credentials(tmp_
         raise AssertionError("expected ValueError")
     except ValueError as ex:
         assert "llm_base_url" in str(ex)
+
+
+def _fake_jina_embedding_post(url, json=None, headers=None, timeout=None):
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {
+        "data": [{"index": i, "embedding": [0.1] * 1024} for i in range(len(json["input"]))]
+    }
+    return response
+
+
+def _fake_cohere_embedding_post(url, json=None, headers=None, timeout=None):
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {
+        "embeddings": {"float": [[0.1] * 1024 for _ in json["texts"]]}
+    }
+    return response
+
+
+def _fake_rerank_post(url, json=None, headers=None, timeout=None):
+    # scores documents by whether they mention "Contractors" so the
+    # benchmark's real relevance judgment (recall@k) is meaningfully
+    # exercised, not just "does this call not crash"
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    documents = json["documents"]
+    scored = sorted(
+        range(len(documents)),
+        key=lambda i: 0 if "Contractors" in documents[i] else 1
+    )
+    response.json.return_value = {
+        "results": [
+            {"index": i, "relevance_score": 1.0 - (rank * 0.1)}
+            for rank, i in enumerate(scored[:json["top_n"]])
+        ]
+    }
+    return response
+
+
+def _api_provider_config(**overrides):
+    defaults = dict(
+        label="api_provider",
+        chunk_size=60,
+        chunk_overlap=10,
+        minimum_chunk_size=5,
+        k_values=[1, 3]
+    )
+    defaults.update(overrides)
+    return BenchmarkConfig(**defaults)
+
+
+@patch("rag.embeddings.jina_embedder.requests.post", side_effect=_fake_jina_embedding_post)
+def test_benchmark_runner_builds_jina_embedder_when_configured(mock_post, tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    config = _api_provider_config(embedder_provider="jina", embedder_api_key="fake-key")
+
+    ((used_config, evaluation_report),) = runner.run([config])
+
+    assert mock_post.called
+    assert evaluation_report.metadata.embedding_provider == "jina"
+    assert evaluation_report.metadata.embedding_model_name == "jina-embeddings-v3"
+    assert used_config.label == "api_provider"
+
+
+@patch("rag.embeddings.cohere_embedder.requests.post", side_effect=_fake_cohere_embedding_post)
+def test_benchmark_runner_builds_cohere_embedder_when_configured(mock_post, tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    config = _api_provider_config(embedder_provider="cohere", embedder_api_key="fake-key")
+
+    ((_, evaluation_report),) = runner.run([config])
+
+    assert mock_post.called
+    assert evaluation_report.metadata.embedding_provider == "cohere"
+
+
+def test_benchmark_runner_jina_embedder_without_api_key_raises(tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    config = _api_provider_config(embedder_provider="jina")
+
+    with pytest.raises(ValueError, match="embedder_api_key"):
+        runner.run([config])
+
+
+def test_benchmark_runner_unknown_embedder_provider_raises(tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    config = _api_provider_config(embedder_provider="not-a-real-provider")
+
+    with pytest.raises(ValueError, match="embedder_provider"):
+        runner.run([config])
+
+
+@patch("rag.retrieval.jina_reranker.requests.post", side_effect=_fake_rerank_post)
+def test_benchmark_runner_builds_jina_reranker_when_configured(mock_post, tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    config = _api_provider_config(reranker_provider="jina", reranker_api_key="fake-key")
+
+    ((_, evaluation_report),) = runner.run([config])
+
+    assert mock_post.called
+    assert evaluation_report.metadata.reranker == "jina:jina-reranker-v2-base-multilingual"
+    assert evaluation_report.aggregate_metrics["recall@3"] == 1.0
+
+
+@patch("rag.retrieval.cohere_reranker.requests.post", side_effect=_fake_rerank_post)
+def test_benchmark_runner_builds_cohere_reranker_when_configured(mock_post, tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    config = _api_provider_config(reranker_provider="cohere", reranker_api_key="fake-key")
+
+    ((_, evaluation_report),) = runner.run([config])
+
+    assert mock_post.called
+    assert evaluation_report.metadata.reranker == "cohere:rerank-english-v3.0"
+
+
+def test_benchmark_runner_reranker_provider_none_overrides_use_reranker_true(tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    # reranker_provider left unset (None) means "derive from use_reranker" -
+    # explicitly proving the back-compat path still resolves to "local"
+    config = _api_provider_config(use_reranker=True)
+
+    ((_, evaluation_report),) = runner.run([config])
+
+    assert evaluation_report.metadata.reranker is not None
+    assert evaluation_report.metadata.reranker.startswith("local:")
+
+
+def test_benchmark_runner_reranker_provider_none_string_disables_reranking(tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    # explicit reranker_provider="none" disables reranking even if
+    # use_reranker=True, since an explicit provider always wins
+    config = _api_provider_config(use_reranker=True, reranker_provider="none")
+
+    ((_, evaluation_report),) = runner.run([config])
+
+    assert evaluation_report.metadata.reranker is None
+
+
+def test_benchmark_runner_unknown_reranker_provider_raises(tmp_path):
+
+    dataset = load_dataset(_build_dataset_file(tmp_path))
+    runner = BenchmarkRunner(dataset)
+    config = _api_provider_config(reranker_provider="not-a-real-provider")
+
+    with pytest.raises(ValueError, match="reranker_provider"):
+        runner.run([config])
