@@ -197,7 +197,13 @@ variable "existing_task_execution_role_name" {
 }
 
 variable "existing_cognito_user_pool_id" {
-  description = "Set to the existing Cognito User Pool ID to reuse it (recommended - avoids invalidating OIDC_* config elsewhere). Leave blank to have this module create a fresh pool instead."
+  description = "Existing Cognito User Pool ID, reused (not recreated) so this module never invalidates already-configured OIDC_* values elsewhere. Defaults to this project's real pool so `apply` wires real authentication with no manual step. Blank disables authentication entirely (AUTH_ENABLED stays at the app's own default of false) - this module does not create a fresh pool; that's a real, separate decision (a new pool means new users, new app client, every existing OIDC_* config elsewhere goes stale) that shouldn't happen as a side effect of an empty string."
   type        = string
-  default     = ""
+  default     = "us-east-1_jkzIa7abx"
+}
+
+variable "cognito_app_client_id" {
+  description = "App client ID for the existing Cognito User Pool above - becomes OIDC_AUDIENCE. Only meaningful when existing_cognito_user_pool_id is set."
+  type        = string
+  default     = "43e8gb73i2g3b3a9kop8dos53u"
 }

@@ -23,3 +23,12 @@ data "aws_iam_role" "task_role" {
 data "aws_iam_role" "task_execution_role" {
   name = var.existing_task_execution_role_name
 }
+
+# Referenced (validates the pool actually exists at plan/apply time),
+# not created - same reasoning as the IAM roles above. Guarded by count
+# rather than required so AUTH_ENABLED can still be turned off entirely
+# by blanking existing_cognito_user_pool_id (see its own description).
+data "aws_cognito_user_pool" "existing" {
+  count        = var.existing_cognito_user_pool_id != "" ? 1 : 0
+  user_pool_id = var.existing_cognito_user_pool_id
+}

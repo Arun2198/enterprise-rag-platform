@@ -19,6 +19,16 @@ class FakeBody:
         return self._data
 
 
+class FakePaginator:
+
+    def __init__(self, objects: dict[str, bytes]):
+        self._objects = objects
+
+    def paginate(self, Bucket, Prefix):
+        keys = [key for key in self._objects if key.startswith(Prefix)]
+        yield {"Contents": [{"Key": key} for key in keys]}
+
+
 class FakeS3Client:
 
     def __init__(self):
@@ -29,6 +39,9 @@ class FakeS3Client:
 
     def get_object(self, Bucket, Key):
         return {"Body": FakeBody(self.objects[Key])}
+
+    def get_paginator(self, name):
+        return FakePaginator(self.objects)
 
 
 def test_register_provider_and_get_provider():
@@ -114,6 +127,33 @@ def test_restore_backup_from_target_round_trip(tmp_path):
 
     assert "registry" in restored
     assert restored_manager.registry.list() == manager.registry.list()
+
+
+def test_list_backups_returns_target_snapshot_ids_when_target_configured(tmp_path):
+
+    client = FakeS3Client()
+    target = S3BackupTarget(client=client, bucket_name="my-bucket")
+    manager = PlatformManager(backup=BackupManager(output_dir=str(tmp_path), target=target))
+
+    snapshot = manager.create_backup()
+
+    assert manager.list_backups() == [snapshot.snapshot_id]
+
+
+def test_list_backups_falls_back_to_local_snapshots_without_a_target(tmp_path):
+
+    manager = PlatformManager(backup=BackupManager(output_dir=str(tmp_path)))
+
+    manager.create_backup()
+
+    assert len(manager.list_backups()) == 1
+
+
+def test_list_backups_empty_before_any_backup_exists(tmp_path):
+
+    manager = PlatformManager(backup=BackupManager(output_dir=str(tmp_path)))
+
+    assert manager.list_backups() == []
 
 
 def test_restore_backup_from_target_without_target_configured_raises():

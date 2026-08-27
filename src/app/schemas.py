@@ -145,3 +145,12 @@ class JobRunResponse(BaseModel):
     finished_at: str | None
     success: bool | None
     error: str | None
+
+
+class BackupRestoreRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1)
+
+
+class BackupRestoreResponse(BaseModel):
+    snapshot_id: str
+    components: list[str]

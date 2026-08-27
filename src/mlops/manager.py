@@ -149,6 +149,20 @@ class PlatformManager:
         self.governance.link_lineage(asset_id, artifact_id, artifact_version)
         telemetry.record_audit_event("lineage_link")
 
+    def list_backups(self) -> list[str]:
+        """
+        Snapshot ids available to restore from - reads the durable
+        target (e.g. S3) when this PlatformManager's BackupManager has
+        one configured, local snapshot files otherwise. Empty list, not
+        an error, when nothing has been backed up yet. This is what
+        makes restore actually discoverable through the API - an admin
+        doesn't need shell access to the box to find a snapshot id.
+        """
+        if self.backup.target is not None:
+            return self.backup.target.list_snapshot_ids()
+
+        return self.backup.list_snapshots()
+
     def create_backup(self) -> BackupSnapshot:
         snapshot = self.backup.create_snapshot({
             "registry": self.registry,

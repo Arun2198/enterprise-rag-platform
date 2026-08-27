@@ -183,9 +183,28 @@ resource "aws_ecs_task_definition" "app" {
           { name = "RETRIEVAL_RELEVANCE_GUARD_ENABLED", value = "true" },
           { name = "SCHEDULER_QUEUE_URL", value = aws_sqs_queue.scheduler.url },
           { name = "SCHEDULER_INTERVAL_SECONDS", value = tostring(var.scheduler_interval_minutes * 60) },
+          { name = "S3_MAX_FILE_SIZE_MB", value = tostring(var.s3_max_file_size_mb) },
         ],
         var.cors_allowed_origin != "" ? [
           { name = "CORS_ALLOWED_ORIGINS", value = var.cors_allowed_origin }
+        ] : [],
+        # Previously the biggest gap in this file: nothing here ever set
+        # AUTH_ENABLED/OIDC_*, so the deployed app always ran with
+        # authentication off regardless of what the running app itself
+        # supports - existing_cognito_user_pool_id sat unused, not even
+        # referenced by a data source. Reuses the real pool (never
+        # recreates it - see the variable's own description for why).
+        length(data.aws_cognito_user_pool.existing) > 0 ? [
+          { name = "AUTH_ENABLED", value = "true" },
+          {
+            name  = "OIDC_ISSUER"
+            value = "https://cognito-idp.${var.aws_region}.amazonaws.com/${data.aws_cognito_user_pool.existing[0].id}"
+          },
+          {
+            name  = "OIDC_JWKS_URL"
+            value = "https://cognito-idp.${var.aws_region}.amazonaws.com/${data.aws_cognito_user_pool.existing[0].id}/.well-known/jwks.json"
+          },
+          { name = "OIDC_AUDIENCE", value = var.cognito_app_client_id },
         ] : []
       )
       secrets = concat(

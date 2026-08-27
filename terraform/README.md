@@ -17,9 +17,18 @@ ECS Fargate + ALB deployment.
   (`scheduler_invocation`, in `scheduler.tf`) since EventBridge
   Scheduler has no existing role to assume - free at rest, same as any
   other IAM role.
-- **Cognito User Pool** - not created by default (`existing_cognito_user_pool_id`
-  is empty). Recreating it would issue a new pool ID and invalidate every
-  already-configured `OIDC_*` value across the app and its CI/CD pipeline.
+- **Cognito User Pool** - never created by this module, only referenced (`data
+  "aws_cognito_user_pool"`, validates it exists at plan/apply time) and reused
+  via `existing_cognito_user_pool_id` (defaults to this project's real pool,
+  `us-east-1_jkzIa7abx`). Recreating it would issue a new pool ID and
+  invalidate every already-configured `OIDC_*` value across the app and its
+  CI/CD pipeline. This is also what actually turns authentication on for the
+  deployed app: `ecs.tf` sets `AUTH_ENABLED=true` plus the three `OIDC_*` env
+  vars whenever the pool reference resolves - previously this module never set
+  any of them, so the deployed ECS task always ran with auth off regardless of
+  what the app itself supports. Blank `existing_cognito_user_pool_id` disables
+  auth entirely rather than creating a fresh pool (this module doesn't do
+  that - see the variable's own description).
 - **The GitHub Actions OIDC provider / `github-actions-ecs-deploy-role`** -
   same reasoning as the task roles.
 
@@ -111,9 +120,11 @@ account's live IAM roles and default VPC before `scheduler.tf` existed,
 which is what caught a real AWS-side constraint `terraform validate`
 alone missed: OpenSearch domain names are capped at 28 characters, so
 `opensearch_domain_name` is deliberately a separate, shorter variable
-from `project_name`. `scheduler.tf` itself has **not** yet been checked
+from `project_name`. `scheduler.tf` and the Cognito wiring in `data.tf`/
+`ecs.tf` (the new `data "aws_cognito_user_pool"` reference and the
+`AUTH_ENABLED`/`OIDC_*` env vars it feeds) have **not** yet been checked
 against a real `terraform plan` (this account's own billed resources
-were already torn down when it was written) - re-run `terraform plan`
+were already torn down when they were written) - re-run `terraform plan`
 against a real account before applying. Nothing here has been
 **applied** - per this project's own cost-awareness rules, no one
 should `apply` this without deciding to accept the ongoing cost above

@@ -168,9 +168,11 @@ providers means passing a different instance into `RAGService.__init__`.
    `JinaEmbedder`/`CohereEmbedder` (`EMBEDDING_PROVIDER=jina`/`cohere`, `rag/embeddings/
    jina_embedder.py`/`cohere_embedder.py`) are API-based alternatives with real retry/backoff
    (`EMBEDDING_TIMEOUT_SECONDS`/`EMBEDDING_MAX_RETRIES`) - live-verified against the real Jina API
-   (1024-dim vectors, `JINA_API_KEY`); Cohere is unit-tested only, not live-verified (no funded
-   key available). `Embedder.dimensions`/`.provider_name`/`.embed_batch()` are part of the
-   Protocol so every implementation (including `HashingEmbedder`) exposes the same shape.
+   via `scripts/jina_live_verification.py` (a real `embed_batch()` call returned two genuine
+   1024-dim vectors with real token usage reported back by the API); Cohere is unit-tested only,
+   not live-verified (no funded key available). `Embedder.dimensions`/`.provider_name`/
+   `.embed_batch()` are part of the Protocol so every implementation (including `HashingEmbedder`)
+   exposes the same shape.
    `sentence_transformer` staying the app-level `Settings` default is deliberately scoped to local
    development and bare/no-env-var construction (tests, scripts, a laptop with no cloud
    credentials) - it is *not* what the AWS deployment actually runs. `terraform/ecs.tf` overrides
@@ -244,8 +246,9 @@ providers means passing a different instance into `RAGService.__init__`.
    `JinaReranker`/`CohereReranker` (`RERANKER_PROVIDER=jina`/`cohere`, `rag/retrieval/
    jina_reranker.py`/`cohere_reranker.py`) are API-based alternatives with the same
    `rerank(query, candidates, top_k)` shape - live-verified against the real Jina API (correctly
-   ranked a relevant chunk at 0.777 vs an irrelevant one at 0.032); Cohere is unit-tested only,
-   not live-verified. Same split as embeddings above: `local` (the `CrossEncoderReranker` cross-
+   ranked a relevant chunk at 0.7295 vs an irrelevant one at 0.0284, via
+   `scripts/jina_live_verification.py`); Cohere is unit-tested only, not live-verified (no funded
+   key available). Same split as embeddings above: `local` (the `CrossEncoderReranker` cross-
    encoder) stays the app-level default for local dev/tests/bare construction, but
    `terraform/ecs.tf` overrides this to `RERANKER_PROVIDER=jina` for the live ECS task - the AWS
    deployment doesn't download this model either.
@@ -487,6 +490,19 @@ the pre-existing MLOps-platform permissions and RAG API-layer ones: `QUERY` (eve
 `AskRequest`/`RAGService.ask()` come only from the validated token's own claims, never the
 request body - a caller cannot claim arbitrary access groups for themselves.
 
+**Terraform wiring for auth** - `terraform/ecs.tf` used to never set `AUTH_ENABLED`/`OIDC_*` at
+all, so the Terraform-deployed ECS task always ran with authentication off regardless of what the
+app itself supports, and `existing_cognito_user_pool_id` sat declared but unreferenced by any
+`data`/`resource` block - a real gap between "the feature is built and live-verified" and "the
+deployment path actually turns it on." Fixed: `terraform/data.tf` now has a real
+`data "aws_cognito_user_pool" "existing"` (reuses the real pool, `us-east-1_jkzIa7abx` by default -
+never recreates it, since a new pool means a new pool ID and every already-configured `OIDC_*`
+value elsewhere goes stale), and `ecs.tf` sets `AUTH_ENABLED=true` plus `OIDC_ISSUER`/
+`OIDC_JWKS_URL`/`OIDC_AUDIENCE` (the last from the new `cognito_app_client_id` variable) whenever
+that pool reference resolves. Blanking `existing_cognito_user_pool_id` disables auth entirely
+rather than triggering fresh-pool creation - this module has never actually implemented that,
+despite the variable's old description implying otherwise.
+
 **Feature-flagged reranking:** `RAGService` optionally takes a `feature_flags:
 mlops.feature_flags.FeatureFlagManager | None`. When set, `_retrieve()` checks
 `is_enabled_for("cross_encoder_reranker", client_id)` per request before using the reranker (a
@@ -568,7 +584,16 @@ started in the FastAPI `lifespan` context manager every `SCHEDULER_INTERVAL_SECO
 deliberately doesn't provide. Admin endpoints: `GET /admin/feature-flags`, `PATCH
 /admin/feature-flags/{name}` (body: `enabled`?/`rollout_percentage`?), `GET
 /admin/scheduler/jobs`, `POST /admin/scheduler/jobs/{job_id}/trigger` (runs a job immediately via
-`Scheduler.trigger()`); all four 404 when `platform_manager` is `None`, with a detail message that
+`Scheduler.trigger()`), `GET /admin/backups` (`TRIGGER_BACKUP` permission, lists snapshot ids via
+`PlatformManager.list_backups()` - the durable target's ids when one is configured, local snapshot
+files otherwise), `POST /admin/backups/restore` (`TRIGGER_RESTORE`, `ADMINISTRATOR`-only per
+`ROLE_PERMISSIONS` - restoring silently overwrites current platform state; body `{"snapshot_id":
+...}`, always restores from the durable target via `restore_backup_from_target()`, `400` when no
+target is configured rather than `404`, since that's a config problem not a missing-snapshot one).
+This closes a real gap: the scheduled `backup` job wrote snapshots automatically, but nothing in
+the app could ever read one back - `RecoveryManager`/`restore_backup_from_target()` had zero HTTP-
+reachable callers before this existed, so a backup nobody could restore was close to worthless
+operationally. All six 404 when `platform_manager` is `None`, with a detail message that
 distinguishes "MLOPS_ENABLED=false" from an actual startup failure (see below). Document-lifecycle
 and debugging endpoints, each RBAC-gated: `POST /ingest` (`UPLOAD_DOCUMENT`, synchronous, local/
 allowed-dir file paths), `POST /documents` (`UPLOAD_DOCUMENT`, multipart upload, async via S3/SQS
@@ -912,7 +937,12 @@ truth; `target=None` (the default for direct construction) keeps local-only beha
 copy instead of a local path - what a *fresh* task with no local backup history actually needs.
 `PlatformManager.restore_backup_from_target(snapshot_id)` wires this through the facade the same
 way `restore_backup(path)` already did, raising `ValueError` if its `BackupManager` wasn't built
-with a target. **Wiring**: `service_factory._build_backup_target()` reuses `S3_BUCKET` (same
+with a target. `PlatformManager.list_backups()` returns available snapshot ids (from the target
+when configured, local files otherwise) so a caller can discover what's restorable without
+filesystem/S3-console access. Both are exposed over HTTP as `GET /admin/backups` / `POST
+/admin/backups/restore` (see the Wiring section above) - previously neither was reachable outside
+a script or the Python REPL, so the automatic scheduled backup had no counterpart a real operator
+could actually use. **Wiring**: `service_factory._build_backup_target()` reuses `S3_BUCKET` (same
 bucket async ingestion already uses, distinct prefix `MLOPS_BACKUP_S3_PREFIX` default
 `mlops_backups/`) rather than provisioning a second bucket - returns `None` (local-only, matching
 prior behavior exactly) when `S3_BUCKET` is unset, same opt-in pattern as async ingestion.

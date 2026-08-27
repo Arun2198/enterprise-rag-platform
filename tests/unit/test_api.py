@@ -221,6 +221,136 @@ def test_admin_scheduler_trigger_unknown_job_returns_404():
     assert response.status_code == 404
 
 
+class _FakeS3ClientForBackups:
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def put_object(self, Bucket, Key, Body, ContentType=None):
+        self.objects[Key] = Body
+
+    def get_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise KeyError(Key)
+
+        class _Body:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self):
+                return self._data
+
+        return {"Body": _Body(self.objects[Key])}
+
+    def get_paginator(self, name):
+        objects = self.objects
+
+        class _Paginator:
+            def paginate(self, Bucket, Prefix):
+                keys = [key for key in objects if key.startswith(Prefix)]
+                yield {"Contents": [{"Key": key} for key in keys]}
+
+        return _Paginator()
+
+
+def _platform_manager_with_target(tmp_path):
+    from mlops.backup import BackupManager
+    from mlops.backup import S3BackupTarget
+    from mlops.manager import PlatformManager
+
+    target = S3BackupTarget(client=_FakeS3ClientForBackups(), bucket_name="fake-bucket")
+    return PlatformManager(backup=BackupManager(output_dir=str(tmp_path), target=target))
+
+
+def test_admin_backups_list_returns_created_snapshots(monkeypatch, tmp_path):
+
+    manager = _platform_manager_with_target(tmp_path)
+    manager.create_backup()
+    monkeypatch.setattr(main_module, "platform_manager", manager)
+    client = TestClient(app)
+
+    response = client.get("/admin/backups")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+def test_admin_backups_list_returns_404_when_mlops_disabled(monkeypatch):
+
+    monkeypatch.setattr(main_module, "platform_manager", None)
+    client = TestClient(app)
+
+    response = client.get("/admin/backups")
+
+    assert response.status_code == 404
+
+
+def test_admin_backups_restore_round_trips_through_the_target(monkeypatch, tmp_path):
+
+    from mlops.schemas import AssetType
+
+    manager = _platform_manager_with_target(tmp_path)
+    manager.register_asset(AssetType.EMBEDDING_MODEL, "hashing", "1.0")
+    snapshot = manager.create_backup()
+    monkeypatch.setattr(main_module, "platform_manager", manager)
+    client = TestClient(app)
+
+    response = client.post("/admin/backups/restore", json={"snapshot_id": snapshot.snapshot_id})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["snapshot_id"] == snapshot.snapshot_id
+    assert "registry" in body["components"]
+
+
+def test_admin_backups_restore_returns_400_when_no_target_configured(monkeypatch, tmp_path):
+
+    from mlops.backup import BackupManager
+    from mlops.manager import PlatformManager
+
+    manager = PlatformManager(backup=BackupManager(output_dir=str(tmp_path)))
+    snapshot = manager.create_backup()
+    monkeypatch.setattr(main_module, "platform_manager", manager)
+    client = TestClient(app)
+
+    response = client.post("/admin/backups/restore", json={"snapshot_id": snapshot.snapshot_id})
+
+    assert response.status_code == 400
+
+
+def test_admin_backups_restore_returns_404_for_unknown_snapshot(monkeypatch, tmp_path):
+
+    manager = _platform_manager_with_target(tmp_path)
+    monkeypatch.setattr(main_module, "platform_manager", manager)
+    client = TestClient(app)
+
+    response = client.post("/admin/backups/restore", json={"snapshot_id": "snapshot_does_not_exist"})
+
+    assert response.status_code == 404
+
+
+def test_admin_backups_restore_returns_403_for_a_role_without_trigger_restore(monkeypatch, tmp_path):
+
+    from app.auth import AuthenticatedUser
+    from mlops.schemas import Role
+
+    manager = _platform_manager_with_target(tmp_path)
+    snapshot = manager.create_backup()
+    monkeypatch.setattr(main_module, "platform_manager", manager)
+    _enable_auth(monkeypatch, _FakeTokenValidator(
+        user=AuthenticatedUser(subject="user-1", role=Role.DATA_SCIENTIST, claims={})
+    ))
+    client = TestClient(app)
+
+    response = client.post(
+        "/admin/backups/restore",
+        json={"snapshot_id": snapshot.snapshot_id},
+        headers={"Authorization": "Bearer good-token"}
+    )
+
+    assert response.status_code == 403
+
+
 def test_lifespan_starts_and_cleanly_cancels_the_scheduler_task():
 
     async def run():

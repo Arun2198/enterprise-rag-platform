@@ -15,6 +15,8 @@ from app.rate_limiter import InMemoryRateLimiter
 from app.schemas import AskDebugResponse
 from app.schemas import AskRequest
 from app.schemas import AskResponse
+from app.schemas import BackupRestoreRequest
+from app.schemas import BackupRestoreResponse
 from app.schemas import CandidateTraceResponse
 from app.schemas import DocumentDeleteResponse
 from app.schemas import DocumentUploadResponse
@@ -688,6 +690,50 @@ if FastAPI is not None:
             raise HTTPException(status_code=404, detail=f"unknown scheduled job: {job_id}") from ex
 
         return JobRunResponse(**vars(run))
+
+    @app.get("/admin/backups", response_model=list[str])
+    def list_backups(
+        user: AuthenticatedUser = Depends(require_permission(Permission.TRIGGER_BACKUP))
+    ) -> list[str]:
+        if platform_manager is None:
+            raise HTTPException(status_code=404, detail=_mlops_unavailable_detail())
+
+        return platform_manager.list_backups()
+
+    @app.post("/admin/backups/restore", response_model=BackupRestoreResponse)
+    def restore_backup(
+        request: BackupRestoreRequest,
+        user: AuthenticatedUser = Depends(require_permission(Permission.TRIGGER_RESTORE))
+    ) -> BackupRestoreResponse:
+        """
+        Restores platform state (registry/artifacts/configuration/
+        feature_flags) from a snapshot - the previously-missing
+        counterpart to the automatic scheduled backup job. Always
+        restores from the durable target (S3), never a local path, so
+        this only works when a backup target is actually configured;
+        ADMINISTRATOR-only (TRIGGER_RESTORE) since restoring silently
+        overwrites current platform state.
+        """
+        if platform_manager is None:
+            raise HTTPException(status_code=404, detail=_mlops_unavailable_detail())
+
+        try:
+            restored = platform_manager.restore_backup_from_target(request.snapshot_id)
+        except ValueError as ex:
+            # no backup target configured (S3_BUCKET unset) - a
+            # configuration problem, not a missing-snapshot problem
+            raise HTTPException(status_code=400, detail=str(ex)) from ex
+        except Exception as ex:
+            # covers "snapshot not found" (a real botocore ClientError
+            # on a missing S3 key) and any other backend failure -
+            # sanitized per this app's own API-hardening rule against
+            # leaking internals through error responses
+            raise HTTPException(
+                status_code=404,
+                detail=f"could not restore snapshot {request.snapshot_id!r}: {type(ex).__name__}"
+            ) from ex
+
+        return BackupRestoreResponse(snapshot_id=request.snapshot_id, components=restored)
 
     def _mlops_unavailable_detail() -> str:
         if startup_error is not None:
