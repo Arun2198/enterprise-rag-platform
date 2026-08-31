@@ -393,23 +393,36 @@ providers means passing a different instance into `RAGService.__init__`.
    script and update `DENSE_EMBEDDER_DEFAULT_THRESHOLD` if `EMBEDDING_MODEL_NAME` changes to a
    materially different model.
 
-   **A third, Jina-specific threshold** (`JINA_EMBEDDER_DEFAULT_THRESHOLD`, `0.37`) exists because
-   this exact gap was hit for real in the live AWS deployment: `EMBEDDING_PROVIDER=jina` became the
-   AWS default (see the Embedding section above) without ever re-running the calibration script
-   against Jina's actual embedding space - the code just fell through to
+   **A third, Jina-specific threshold** (`JINA_EMBEDDER_DEFAULT_THRESHOLD`, `0.30`) exists because
+   this exact gap was hit for real in the live AWS deployment, twice: `EMBEDDING_PROVIDER=jina`
+   became the AWS default (see the Embedding section above) without ever re-running the calibration
+   script against Jina's actual embedding space - the code just fell through to
    `DENSE_EMBEDDER_DEFAULT_THRESHOLD` (0.68, calibrated for `BAAI/bge-small-en-v1.5`), on the
    unverified assumption that one dense embedder's threshold would transfer to another. It didn't:
    a genuinely on-topic, answerable question ("What are the trustworthiness characteristics of AI
    systems?") scored 0.60 in production and incorrectly abstained. Re-running
    `scripts/retrieval_relevance_guard_verification_jina.py` (same methodology, real Jina API calls)
    against the real 24-query golden dataset found the deployed 0.68 threshold produces **14/24
-   false positives** against Jina's embedding space - unusable. Jina's answerable-query scores
-   range 0.377-0.918 versus bge-small's 0.716+, meaning Jina's similarity scale sits meaningfully
-   lower overall and unrelated-text scores land closer to related-text scores (a different
-   embedding space's own anisotropy, not a defect in either model). `0.37` (just under the lowest
-   real answerable score) restores zero false positives, still catching 2 of 4 unanswerable cases.
-   `default_retrieval_relevance_threshold()` now dispatches on `embedder.provider_name == "jina"`
-   for this. This bug and its fix are the concrete argument for the general rule stated above -
+   false positives** against Jina's embedding space - unusable; `0.37` (just under that dataset's
+   observed answerable minimum of 0.377) restored zero false positives against it, still catching 2
+   of 4 unanswerable cases.
+
+   That single-document calibration didn't generalize. Live-testing against a second, real,
+   different document (an unrelated HR handbook, never part of any golden dataset) found a
+   genuinely answerable question scoring 0.36 - just under 0.37, and *below* the AI-RMF
+   calibration's own observed minimum, sitting only ~0.02 away from two of the four original
+   unanswerable scores (0.333, 0.348). A cosine-similarity cutoff tuned on one document's 24
+   queries doesn't reliably hold on a different document's content - the real separation in Jina's
+   embedding space between "clearly unrelated" and "genuinely relevant" is narrower and more
+   document-dependent than the first calibration run could show. `0.30` restores real margin below
+   both data points, at the honest cost of no longer reliably catching any of the four original
+   unanswerable queries - an acceptable trade, since false-positive abstention on real content is a
+   worse failure than an occasional missed catch, and `HallucinationDetector`'s independent
+   groundedness check still guards against ungrounded answers regardless. A properly generalizing
+   fix would calibrate against a golden dataset spanning multiple real documents, not one - not
+   done here; treat any single-document calibration for this guard as provisional.
+   `default_retrieval_relevance_threshold()` dispatches on `embedder.provider_name == "jina"` for
+   this. This bug and its fix (twice) are the concrete argument for the general rule stated above -
    re-verify per provider, never assume a threshold transfers. `PolicyEngine`
    (`policy.py`) evaluates configurable `PolicyRule`s (condition: guardrail name + min severity
    and/or a metadata threshold) that can escalate — never downgrade — the action a `GuardrailManager`

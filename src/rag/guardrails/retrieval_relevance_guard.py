@@ -34,31 +34,53 @@ from rag.guardrails.base import Severity
 #
 #   jina-embeddings-v3 (via JinaEmbedder, real API calls, calibrated with
 #   scripts/retrieval_relevance_guard_verification_jina.py) - found the
-#   hard way in the live AWS deployment: DENSE_EMBEDDER_DEFAULT_THRESHOLD
-#   (0.68, calibrated for a *different* embedder) was never re-verified
-#   after EMBEDDING_PROVIDER=jina became the AWS default, and in
-#   production it caused false-positive abstention on a genuinely
-#   on-topic, answerable query. Real measured scores: answerable range
-#   0.377-0.918 (24/24 queries), unanswerable range 0.333-0.576 - these
-#   overlap substantially more than bge-small-en-v1.5's did (Jina's
-#   embedding space puts unrelated text closer together than bge-small's
-#   does). 0.68 produces 14/24 false positives against real answerable
-#   queries - unusable. 0.37 gives zero false positives (just under the
-#   lowest real answerable score) and still catches 2/4 unanswerable
-#   cases - same "prioritize zero false positives over catch rate"
-#   choice already made for bge-small, just at a much lower absolute
-#   number because Jina's similarity scale sits lower overall.
+#   hard way in the live AWS deployment, twice: DENSE_EMBEDDER_DEFAULT_
+#   THRESHOLD (0.68, calibrated for a *different* embedder) was never
+#   re-verified after EMBEDDING_PROVIDER=jina became the AWS default,
+#   and in production it caused false-positive abstention on a genuinely
+#   on-topic query. First calibration attempt against the 24-query
+#   AI-RMF golden dataset: answerable range 0.377-0.918, unanswerable
+#   range 0.333-0.576 - set to 0.37 (just under the observed answerable
+#   minimum), zero false positives against that one dataset.
+#
+#   That calibration didn't generalize: testing against a second, real,
+#   different document (an HR handbook, not in any golden dataset) found
+#   a genuinely answerable question scoring 0.36 - just under the 0.37
+#   threshold, and *below* the AI-RMF calibration's own observed
+#   minimum. That single new data point sits only ~0.02 away from two of
+#   the four original unanswerable scores (0.333, 0.348) - meaning the
+#   real separation between "clearly unrelated" and "genuinely relevant"
+#   in Jina's embedding space is narrower, and more document-dependent,
+#   than a single-document 24-query sample could show. A cosine-
+#   similarity cutoff calibrated on one document's queries is not
+#   guaranteed to hold on a different document's content.
+#
+#   0.30 restores real margin below both the original calibration's
+#   answerable minimum (0.377) and the new near-miss (0.36), at the
+#   honest cost of no longer reliably catching any of the four original
+#   unanswerable queries (all of which score at or above 0.333) - this
+#   guard's real-world catch rate for genuinely unanswerable queries is
+#   therefore lower than first measured. That's an acceptable trade:
+#   false-positive abstention on real content is a worse user-facing
+#   failure than occasionally not catching an off-topic query, and
+#   HallucinationDetector's groundedness check remains a second,
+#   independent line of defense against ungrounded answers regardless.
+#   A proper fix would calibrate against a golden dataset spanning
+#   multiple real documents rather than one - not done here.
 #
 # Three named defaults, not one universal number - different embedding
 # models produce genuinely different cosine-similarity distributions
 # (embedding space anisotropy varies by model), so a threshold from one
 # does not transfer to another - this was proven wrong in production
-# once already for exactly this reason. Re-run the matching verification
-# script and update the relevant constant whenever EMBEDDING_MODEL_NAME
-# or EMBEDDING_PROVIDER changes to a materially different model/provider.
+# twice already for exactly this reason. Re-run the matching
+# verification script and update the relevant constant whenever
+# EMBEDDING_MODEL_NAME or EMBEDDING_PROVIDER changes to a materially
+# different model/provider, and treat any single-document calibration
+# as provisional until it's been checked against real content it wasn't
+# tuned on.
 HASHING_EMBEDDER_DEFAULT_THRESHOLD = 0.20
 DENSE_EMBEDDER_DEFAULT_THRESHOLD = 0.68
-JINA_EMBEDDER_DEFAULT_THRESHOLD = 0.37
+JINA_EMBEDDER_DEFAULT_THRESHOLD = 0.30
 
 
 def default_retrieval_relevance_threshold(
