@@ -34,18 +34,19 @@ ECS Fargate + ALB deployment.
 
 ## Why standard ECS Fargate, not "ECS Express Mode"
 
-The GitHub Actions deploy pipeline (`.github/workflows/deploy-aws.yml`)
-uses `aws-actions/amazon-ecs-deploy-express-service`, a managed
-convenience layer with no equivalent Terraform resource type as of this
-module's authoring. This module provisions the *standard* equivalent
-(`aws_ecs_service` + `aws_lb` + target group + listener) - same task
-role, execution role, container port, and health check path, so the two
-deployment paths are functionally interchangeable, but they are **not
-the same resources** and applying this module does not adopt whatever
-Express Mode created. See the root `CLAUDE.md` and the deployment
-runbook for the Express Mode path, which remains the day-to-day
-deployment method; this module is the from-scratch-reproducible
-alternative.
+This module provisions the standard shape (`aws_ecs_service` + `aws_lb`
++ target group + listener), and `.github/workflows/deploy-aws.yml`
+deploys to exactly that service on every push to `main` (build+push the
+image, force a new deployment, wait for it to stabilize, sync the
+frontend). Express Mode (`aws-actions/amazon-ecs-deploy-express-service`)
+was an earlier, since-abandoned deployment path with no equivalent
+Terraform resource type - it targeted a differently-named cluster/service
+that this module never provisions or adopts. The workflow used to also
+run that Express Mode step on every push; it's been removed (it was
+failing on AWS API flakiness rather than anything blocking it, meaning
+it was one retry away from actually creating a second, real-cost,
+untracked service). The standard ECS Fargate deployment this module
+provisions is the only deployment path now - not an alternative to it.
 
 HTTP only - no ACM certificate or custom domain is wired up. Add an
 `aws_acm_certificate` + HTTPS listener before using this for anything

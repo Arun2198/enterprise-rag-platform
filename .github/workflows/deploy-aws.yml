@@ -1,4 +1,22 @@
-name: Deploy to AWS (ECS Express Mode)
+name: Deploy to AWS
+
+# Real deployment path: standard ECS Fargate + ALB, managed by
+# terraform/ecs.tf. This used to end with an "ECS Deploy Express Mode"
+# step targeting a completely different, never-actually-used deployment
+# shape (a separate service the Terraform-managed stack has no relation
+# to) - it had been silently failing on every push (AWS API flakiness on
+# service creation, not a real blocker) rather than actually succeeding,
+# which meant it was one retry away from standing up a second, real-cost,
+# unmonitored ECS service nobody was tracking. Replaced with the deploy
+# this repo has actually been running by hand all along: build+push the
+# image, force a new deployment on the real service, wait for it to
+# stabilize, then sync the static frontend to its S3 bucket.
+#
+# This does NOT run `terraform apply` - infrastructure changes stay a
+# deliberate, human-run step (see terraform/README.md). Auto-applying
+# infra changes on every push is a materially different risk than
+# redeploying the application/frontend, and isn't something this
+# workflow should decide on its own.
 
 on:
   push:
@@ -71,7 +89,7 @@ jobs:
           ignore-unfixed: true
 
   deploy:
-    name: Build and deploy
+    name: Build, push, and deploy
     runs-on: ubuntu-latest
     needs: [quality-gates, docker-build-scan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -106,48 +124,32 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
 
-      - name: Deploy to ECS Express Mode
-        uses: aws-actions/amazon-ecs-deploy-express-service@v1
-        with:
-          service-name: ${{ env.ECS_SERVICE }}
-          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          execution-role-arn: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole
-          task-role-arn: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/ecsTaskRole
-          infrastructure-role-arn: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/ecsInfrastructureRoleForExpressServices
-          cluster: ${{ env.ECS_CLUSTER }}
-          container-port: 8000
-          environment-variables: |
-            [
-              {"name": "RERANKER_ENABLED", "value": "true"},
-              {"name": "EMBEDDING_PROVIDER", "value": "sentence_transformer"},
-              {"name": "EMBEDDING_MODEL_NAME", "value": "BAAI/bge-base-en-v1.5"},
-              {"name": "GENERATION_PROVIDER", "value": "${{ vars.GENERATION_PROVIDER }}"},
-              {"name": "GENERATION_FALLBACK_PROVIDER", "value": "${{ vars.GENERATION_FALLBACK_PROVIDER }}"},
-              {"name": "AWS_REGION", "value": "${{ env.AWS_REGION }}"},
-              {"name": "BEDROCK_MODEL_ID", "value": "arn:aws:bedrock:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0"},
-              {"name": "LLM_BASE_URL", "value": "https://integrate.api.nvidia.com/v1"},
-              {"name": "LLM_MODEL_NAME", "value": "meta/llama-3.1-8b-instruct"},
-              {"name": "VECTOR_STORE_PROVIDER", "value": "opensearch"},
-              {"name": "OPENSEARCH_HOST", "value": "${{ vars.OPENSEARCH_HOST }}"},
-              {"name": "S3_BUCKET", "value": "${{ vars.S3_BUCKET }}"},
-              {"name": "SQS_QUEUE_URL", "value": "${{ vars.SQS_QUEUE_URL }}"},
-              {"name": "ASYNC_INGESTION_ENABLED", "value": "true"},
-              {"name": "INGEST_ALLOWED_DIR", "value": "sample_documents"},
-              {"name": "AUTH_ENABLED", "value": "true"},
-              {"name": "OIDC_ISSUER", "value": "${{ vars.OIDC_ISSUER }}"},
-              {"name": "OIDC_AUDIENCE", "value": "${{ vars.OIDC_AUDIENCE }}"},
-              {"name": "OIDC_JWKS_URL", "value": "${{ vars.OIDC_JWKS_URL }}"},
-              {"name": "RETRIEVAL_RELEVANCE_GUARD_ENABLED", "value": "true"},
-              {"name": "CORS_ALLOWED_ORIGINS", "value": "http://enterprise-rag-platform-frontend-849279003696.s3-website-us-east-1.amazonaws.com"}
-            ]
-          secrets: |
-            [
-              {"name": "LLM_API_KEY", "valueFrom": "${{ vars.LLM_API_KEY_SECRET_ARN }}"}
-            ]
-          cpu: '1024'
-          memory: '4096'
-          health-check-path: /health
-          min-task-count: 1
-          max-task-count: 2
-          auto-scaling-metric: AVERAGE_CPU
-          auto-scaling-target-value: 70
+      - name: Force new ECS deployment
+        run: |
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
+            --force-new-deployment \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Wait for the service to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Deploy frontend to S3
+        run: |
+          aws s3 cp frontend/index.html \
+            "s3://${{ vars.FRONTEND_S3_BUCKET }}/index.html" \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Verify /health after deploy
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "${{ vars.ALB_URL }}/health")
+          echo "health check status: $status"
+          if [ "$status" != "200" ]; then
+            echo "::error::/health returned $status after deploy"
+            exit 1
+          fi

@@ -34,11 +34,33 @@ tracker), and the frontend page (plain HTML/CSS/JS, no framework).
 not trained here): `BAAI/bge-base-en-v1.5`, `cross-encoder/ms-marco-MiniLM-L-6-v2`,
 `cross-encoder/nli-deberta-v3-base`, `en_core_web_sm`. External AI APIs: AWS Bedrock (Claude
 Haiku 4.5), NVIDIA NIM, Jina AI, Cohere. Managed AWS services (infrastructure, not code):
-OpenSearch Service, S3, SQS, Cognito, ECS Fargate (Express Mode), ECR, IAM, Secrets Manager,
-Bedrock, ELB/ALB, CloudWatch Logs, CloudTrail. CI/CD: GitHub Actions plus its marketplace actions
+OpenSearch Service, S3, SQS, Cognito, ECS Fargate, ECR, IAM, Secrets Manager, Bedrock, ELB/ALB,
+CloudWatch Logs, CloudTrail. CI/CD: GitHub Actions plus its marketplace actions
 (`actions/checkout`, `aws-actions/configure-aws-credentials`, `aws-actions/amazon-ecr-login`,
-`docker/build-push-action`, `aws-actions/amazon-ecs-deploy-express-service`) — deployed via
-`.github/workflows/deploy-aws.yml` using GitHub OIDC → AWS IAM (no long-lived AWS keys in GitHub).
+`docker/build-push-action`, `aquasecurity/trivy-action`) — `.github/workflows/deploy-aws.yml`
+runs tests/lint/mypy/bandit/pip-audit + a Trivy image scan on every push and PR, and on a push to
+`main` also builds+pushes the image, force-redeploys the real Terraform-managed ECS service, waits
+for it to stabilize, syncs `frontend/index.html` to its S3 bucket, and verifies `/health` -
+via GitHub OIDC → AWS IAM (no long-lived AWS keys in GitHub). `terraform apply` itself stays a
+deliberate, human-run step, never triggered by this workflow - an infra change is a materially
+different risk than redeploying the app, and isn't something a push-triggered workflow should
+decide on its own (see `terraform/README.md`). `.github/workflows/build-push-image.yml` is a
+lighter manual (`workflow_dispatch`-only) fallback for rebuilding/pushing the image alone, without
+touching ECS. `deploy-aws.yml` used to end with an `aws-actions/amazon-ecs-deploy-express-service`
+step targeting a completely different, abandoned "ECS Express Mode" service with no relation to
+the Terraform-managed one - found still silently auto-running and failing on every push (AWS API
+flakiness on service creation, not a real blocker, so it was one retry away from actually
+succeeding and standing up a second, untracked, real-cost service) and removed; see
+`terraform/README.md`'s note on this. The GitHub Actions repo variables it reads
+(`ECS_CLUSTER`/`ECS_SERVICE`/`SQS_QUEUE_URL`) had also drifted to the abandoned deployment's
+resource names and were corrected to the real ones (`enterprise-rag-platform-cluster`/
+`enterprise-rag-platform-service`/the real ingestion queue URL) as part of the same fix; two new
+vars (`FRONTEND_S3_BUCKET`, `ALB_URL`) were added for the new frontend-sync/health-check steps.
+The `github-actions-ecs-deploy-role` IAM role predates this repo's Terraform (bootstrapped by hand
+to avoid a chicken-and-egg problem with the OIDC trust relationship) and picked up one new inline
+statement (`s3:PutObject`/`s3:ListBucket` scoped to the frontend bucket) for the frontend-sync
+step - not yet brought under Terraform management, unlike everything else IAM-related in this
+repo; treat that as a known gap if the role is ever touched again.
 
 In short: the pipeline architecture, orchestration, guardrail logic, MLOps backbone, evaluation
 framework, and API/frontend are custom; the ML models, cloud infrastructure, and generic

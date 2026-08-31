@@ -1,12 +1,10 @@
 name: Build and push image (manual)
 
-# Deliberately separate from deploy-aws.yml's own build-and-push step:
-# that workflow's deploy job targets ECS Express Mode specifically,
-# which is a different deployment path from the Terraform-managed
-# standard ECS Fargate + ALB service (see terraform/README.md). This
-# workflow only builds and pushes to ECR - nothing here ever calls
-# amazon-ecs-deploy-express-service or touches an ECS service, so it's
-# safe to run regardless of which deployment path is currently active.
+# deploy-aws.yml now runs the full build+push+ECS-redeploy+frontend-sync
+# pipeline automatically on every push to main - this workflow is a
+# lighter manual fallback for when you only want to rebuild/push the
+# image (e.g. warm the ECR cache, or push without forcing a redeploy)
+# without running the rest of that pipeline. It never touches ECS.
 
 on:
   workflow_dispatch: {}
