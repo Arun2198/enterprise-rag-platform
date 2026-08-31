@@ -32,14 +32,33 @@ from rag.guardrails.base import Severity
 #     service_factory's RETRIEVAL_RELEVANCE_GUARD_ENABLED) rather than
 #     being on by default like PIIGuard/HallucinationDetector.
 #
-# Two named defaults, not one universal number - dense embedders have a
-# higher baseline similarity between unrelated text than a crude hash
-# embedder (embedding space anisotropy), so a threshold from one doesn't
-# transfer to the other. Re-run the verification script and update
-# DENSE_EMBEDDER_DEFAULT_THRESHOLD if EMBEDDING_MODEL_NAME changes to a
-# materially different model.
+#   jina-embeddings-v3 (via JinaEmbedder, real API calls, calibrated with
+#   scripts/retrieval_relevance_guard_verification_jina.py) - found the
+#   hard way in the live AWS deployment: DENSE_EMBEDDER_DEFAULT_THRESHOLD
+#   (0.68, calibrated for a *different* embedder) was never re-verified
+#   after EMBEDDING_PROVIDER=jina became the AWS default, and in
+#   production it caused false-positive abstention on a genuinely
+#   on-topic, answerable query. Real measured scores: answerable range
+#   0.377-0.918 (24/24 queries), unanswerable range 0.333-0.576 - these
+#   overlap substantially more than bge-small-en-v1.5's did (Jina's
+#   embedding space puts unrelated text closer together than bge-small's
+#   does). 0.68 produces 14/24 false positives against real answerable
+#   queries - unusable. 0.37 gives zero false positives (just under the
+#   lowest real answerable score) and still catches 2/4 unanswerable
+#   cases - same "prioritize zero false positives over catch rate"
+#   choice already made for bge-small, just at a much lower absolute
+#   number because Jina's similarity scale sits lower overall.
+#
+# Three named defaults, not one universal number - different embedding
+# models produce genuinely different cosine-similarity distributions
+# (embedding space anisotropy varies by model), so a threshold from one
+# does not transfer to another - this was proven wrong in production
+# once already for exactly this reason. Re-run the matching verification
+# script and update the relevant constant whenever EMBEDDING_MODEL_NAME
+# or EMBEDDING_PROVIDER changes to a materially different model/provider.
 HASHING_EMBEDDER_DEFAULT_THRESHOLD = 0.20
 DENSE_EMBEDDER_DEFAULT_THRESHOLD = 0.68
+JINA_EMBEDDER_DEFAULT_THRESHOLD = 0.37
 
 
 def default_retrieval_relevance_threshold(
@@ -49,6 +68,9 @@ def default_retrieval_relevance_threshold(
 
     if provider_name == "hashing":
         return HASHING_EMBEDDER_DEFAULT_THRESHOLD
+
+    if provider_name == "jina":
+        return JINA_EMBEDDER_DEFAULT_THRESHOLD
 
     return DENSE_EMBEDDER_DEFAULT_THRESHOLD
 

@@ -391,7 +391,26 @@ providers means passing a different instance into `RAGService.__init__`.
    to `HashingEmbedder` for speed), so the real fix can only be demonstrated with genuine dense
    embeddings, via the verification script, outside the fast/offline unit-test path. Re-run that
    script and update `DENSE_EMBEDDER_DEFAULT_THRESHOLD` if `EMBEDDING_MODEL_NAME` changes to a
-   materially different model. `PolicyEngine`
+   materially different model.
+
+   **A third, Jina-specific threshold** (`JINA_EMBEDDER_DEFAULT_THRESHOLD`, `0.37`) exists because
+   this exact gap was hit for real in the live AWS deployment: `EMBEDDING_PROVIDER=jina` became the
+   AWS default (see the Embedding section above) without ever re-running the calibration script
+   against Jina's actual embedding space - the code just fell through to
+   `DENSE_EMBEDDER_DEFAULT_THRESHOLD` (0.68, calibrated for `BAAI/bge-small-en-v1.5`), on the
+   unverified assumption that one dense embedder's threshold would transfer to another. It didn't:
+   a genuinely on-topic, answerable question ("What are the trustworthiness characteristics of AI
+   systems?") scored 0.60 in production and incorrectly abstained. Re-running
+   `scripts/retrieval_relevance_guard_verification_jina.py` (same methodology, real Jina API calls)
+   against the real 24-query golden dataset found the deployed 0.68 threshold produces **14/24
+   false positives** against Jina's embedding space - unusable. Jina's answerable-query scores
+   range 0.377-0.918 versus bge-small's 0.716+, meaning Jina's similarity scale sits meaningfully
+   lower overall and unrelated-text scores land closer to related-text scores (a different
+   embedding space's own anisotropy, not a defect in either model). `0.37` (just under the lowest
+   real answerable score) restores zero false positives, still catching 2 of 4 unanswerable cases.
+   `default_retrieval_relevance_threshold()` now dispatches on `embedder.provider_name == "jina"`
+   for this. This bug and its fix are the concrete argument for the general rule stated above -
+   re-verify per provider, never assume a threshold transfers. `PolicyEngine`
    (`policy.py`) evaluates configurable `PolicyRule`s (condition: guardrail name + min severity
    and/or a metadata threshold) that can escalate — never downgrade — the action a `GuardrailManager`
    would otherwise take; `PolicyEngine.default_policies()` implements the HLD's two example

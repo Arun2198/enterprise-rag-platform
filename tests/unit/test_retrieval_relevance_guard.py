@@ -2,6 +2,7 @@ from rag.chunking.chunk import Chunk
 from rag.guardrails.base import GuardrailContext
 from rag.guardrails.retrieval_relevance_guard import DENSE_EMBEDDER_DEFAULT_THRESHOLD
 from rag.guardrails.retrieval_relevance_guard import HASHING_EMBEDDER_DEFAULT_THRESHOLD
+from rag.guardrails.retrieval_relevance_guard import JINA_EMBEDDER_DEFAULT_THRESHOLD
 from rag.guardrails.retrieval_relevance_guard import RetrievalRelevanceGuard
 from rag.guardrails.retrieval_relevance_guard import default_retrieval_relevance_threshold
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
@@ -134,6 +135,22 @@ def test_default_threshold_is_lower_for_hashing_embedder():
     assert default_retrieval_relevance_threshold(_DenseLike()) == DENSE_EMBEDDER_DEFAULT_THRESHOLD
     assert HASHING_EMBEDDER_DEFAULT_THRESHOLD < DENSE_EMBEDDER_DEFAULT_THRESHOLD
     assert default_retrieval_relevance_threshold(None) == DENSE_EMBEDDER_DEFAULT_THRESHOLD
+
+
+def test_default_threshold_uses_jina_specific_calibration():
+
+    class _JinaLike:
+        provider_name = "jina"
+
+    # Jina's own calibration (JINA_EMBEDDER_DEFAULT_THRESHOLD) is
+    # deliberately different from - and lower than - the dense default
+    # calibrated for a local sentence-transformers model. This is the
+    # regression test for a real production bug: before this dispatch
+    # existed, Jina queries were evaluated against the sentence-
+    # transformer threshold and produced false-positive abstention on
+    # genuinely answerable queries (14/24 in the real calibration run).
+    assert default_retrieval_relevance_threshold(_JinaLike()) == JINA_EMBEDDER_DEFAULT_THRESHOLD
+    assert JINA_EMBEDDER_DEFAULT_THRESHOLD != DENSE_EMBEDDER_DEFAULT_THRESHOLD
 
 
 def test_explicit_threshold_overrides_the_embedder_based_default():
