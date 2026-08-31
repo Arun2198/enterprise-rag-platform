@@ -231,6 +231,19 @@ resource "aws_ecs_service" "app" {
   desired_count   = var.ecs_desired_count
   launch_type     = "FARGATE"
 
+  # Defaulted to 0 (unset) before this - the ALB started health-checking
+  # a brand-new task immediately on launch, well before the app finishes
+  # installing its runtime deps and loading its embedding/reranker models
+  # (real, observed multi-minute cold start), so ECS killed the first
+  # task of essentially every deployment for failing a health check it
+  # was never going to be ready for in time - confirmed live, both during
+  # manual redeploys this session and the first run of the automated
+  # deploy-aws.yml pipeline (task failed, an automatic retry then
+  # succeeded, every single time). This doesn't change steady-state
+  # behavior at all - only how long a *new* task gets before the ALB
+  # starts judging it.
+  health_check_grace_period_seconds = 180
+
   network_configuration {
     subnets          = data.aws_subnets.default[0].ids
     security_groups  = [aws_security_group.ecs_tasks.id]
