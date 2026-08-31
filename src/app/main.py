@@ -276,21 +276,6 @@ if FastAPI is not None:
         lifespan=lifespan
     )
 
-    if settings.cors_allowed_origins:
-        # Off by default (no origins configured = no CORSMiddleware at
-        # all, unchanged from before this existed) - a browser-hosted
-        # frontend on a different origin needs this explicitly opted in
-        # via CORS_ALLOWED_ORIGINS, since this API sits behind real
-        # bearer-token auth rather than relying on browser same-origin
-        # policy for protection.
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=list(settings.cors_allowed_origins),
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"]
-        )
-
     _rate_limiter = (
         InMemoryRateLimiter(
             requests_per_window=settings.rate_limit_requests_per_minute,
@@ -300,6 +285,16 @@ if FastAPI is not None:
     )
 
     if _rate_limiter is not None:
+        # Registered before CORSMiddleware below deliberately: Starlette
+        # wraps middleware added via add_middleware()/@app.middleware in
+        # call order with the *last*-added one ending up outermost (closest
+        # to Starlette's own ServerErrorMiddleware). CORSMiddleware must be
+        # outermost so its headers reach every response, including a 500
+        # for an exception that escapes this middleware entirely - added
+        # in the opposite order (CORS first, this second) a real
+        # unhandled exception here produced a 500 with no CORS headers at
+        # all, which a browser reports as a generic "blocked by CORS
+        # policy" / "Failed to fetch" with no way to see the real error.
         @app.middleware("http")
         async def rate_limit_middleware(request: Request, call_next):
             # /health and /ready are polled continuously by ECS's own
@@ -328,6 +323,22 @@ if FastAPI is not None:
                 return JSONResponse(status_code=429, content={"detail": "rate limit exceeded"})
 
             return await call_next(request)
+
+    if settings.cors_allowed_origins:
+        # Off by default (no origins configured = no CORSMiddleware at
+        # all, unchanged from before this existed) - a browser-hosted
+        # frontend on a different origin needs this explicitly opted in
+        # via CORS_ALLOWED_ORIGINS, since this API sits behind real
+        # bearer-token auth rather than relying on browser same-origin
+        # policy for protection. Added after the rate limiter above so it
+        # ends up outermost - see that middleware's own comment.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_allowed_origins),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"]
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request, exc: Exception):
