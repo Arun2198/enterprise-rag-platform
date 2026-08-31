@@ -39,9 +39,17 @@ CloudWatch Logs, CloudTrail. CI/CD: GitHub Actions plus its marketplace actions
 (`actions/checkout`, `aws-actions/configure-aws-credentials`, `aws-actions/amazon-ecr-login`,
 `docker/build-push-action`, `aquasecurity/trivy-action`) — `.github/workflows/deploy-aws.yml`
 runs tests/lint/mypy/bandit/pip-audit + a Trivy image scan on every push and PR, and on a push to
-`main` also builds+pushes the image, force-redeploys the real Terraform-managed ECS service, waits
-for it to stabilize, syncs `frontend/index.html` to its S3 bucket, and verifies `/health` -
-via GitHub OIDC → AWS IAM (no long-lived AWS keys in GitHub). `terraform apply` itself stays a
+`main` also builds+pushes the image, force-redeploys the real Terraform-managed ECS service, polls
+`rolloutState`/`failedTasks` itself until stable (not `aws ecs wait services-stable` - its fixed
+10-minute budget is juuust too tight for this app's real cold start, confirmed live: ~10.5 minutes
+end to end even for a healthy, zero-failed-task deployment, and the CLI exposes no way to widen
+it), syncs `frontend/index.html` to its S3 bucket, and verifies `/health` - via GitHub OIDC → AWS
+IAM (no long-lived AWS keys in GitHub). See `terraform/ecs.tf`'s `health_check_grace_period_seconds`
+for the actual fix that made deployments reliable in the first place - it defaulted to `0`, so the
+ALB started judging a brand-new task before it had any real chance of being ready, and every
+deployment failed its first task and only succeeded on ECS's own automatic retry; set to `180` and
+live-verified (forced redeploy, `failedTasks: 0`, `rolloutState: COMPLETED`) after the fix.
+`terraform apply` itself stays a
 deliberate, human-run step, never triggered by this workflow - an infra change is a materially
 different risk than redeploying the app, and isn't something a push-triggered workflow should
 decide on its own (see `terraform/README.md`). `.github/workflows/build-push-image.yml` is a

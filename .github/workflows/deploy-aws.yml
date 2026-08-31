@@ -133,11 +133,46 @@ jobs:
             --region "${{ env.AWS_REGION }}"
 
       - name: Wait for the service to stabilize
+        # `aws ecs wait services-stable`'s fixed budget is 15s x 40
+        # attempts = 10 minutes exactly, and the CLI doesn't expose a way
+        # to widen it (no --waiter-config flag, confirmed) - found live to
+        # be juuust too tight for this app's real cold start (image pull +
+        # installing runtime deps + loading the embedding/reranker
+        # models), which took ~10.5 minutes end to end even for a healthy,
+        # zero-failed-task deployment (see health_check_grace_period_seconds
+        # in terraform/ecs.tf for the fix that made deployments reliable at
+        # all - this is a separate, CI-side timing issue). Polling
+        # ourselves also means failing fast and loud on a real failed task
+        # instead of only ever seeing a generic timeout either way.
+        timeout-minutes: 20
         run: |
-          aws ecs wait services-stable \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --services "${{ env.ECS_SERVICE }}" \
-            --region "${{ env.AWS_REGION }}"
+          while true; do
+            rollout=$(aws ecs describe-services \
+              --cluster "${{ env.ECS_CLUSTER }}" \
+              --services "${{ env.ECS_SERVICE }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'services[0].deployments[?status==`PRIMARY`]|[0].rolloutState' \
+              --output text)
+            failed=$(aws ecs describe-services \
+              --cluster "${{ env.ECS_CLUSTER }}" \
+              --services "${{ env.ECS_SERVICE }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'services[0].deployments[?status==`PRIMARY`]|[0].failedTasks' \
+              --output text)
+            echo "rolloutState=$rollout failedTasks=$failed"
+
+            if [ "$failed" != "0" ]; then
+              echo "::error::deployment has $failed failed task(s)"
+              exit 1
+            fi
+
+            if [ "$rollout" = "COMPLETED" ]; then
+              echo "deployment stable"
+              exit 0
+            fi
+
+            sleep 15
+          done
 
       - name: Deploy frontend to S3
         run: |
