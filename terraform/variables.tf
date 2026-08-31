@@ -125,15 +125,15 @@ variable "embedding_model_name" {
 }
 
 variable "generation_provider" {
-  type        = string
-  default     = "bedrock"
-  description = "extractive | bedrock | openai_compatible"
+  type    = string
+  default = "openai_compatible"
+  description = "extractive | bedrock | openai_compatible. Bedrock is the architecturally preferred primary (IAM-role auth, no API key to manage) but is currently blocked on this account by AWS Marketplace's INVALID_PAYMENT_INSTRUMENT (verified live 2026-08-26 with a direct converse call against the exact configured model ARN) - a real payment method needs adding in the AWS Billing Console before switching this back to \"bedrock\". openai_compatible (NVIDIA NIM) is the default here so /ask actually produces answers in the meantime."
 }
 
 variable "generation_fallback_provider" {
   type        = string
-  default     = "openai_compatible"
-  description = "Empty string disables the fallback provider entirely."
+  default     = ""
+  description = "Empty string disables the fallback provider entirely - deliberate while generation_provider=openai_compatible, since OpenAICompatibleAnswerer already degrades gracefully on its own (returns a fallback string, never raises) rather than needing FallbackAnswerer to catch an exception that won't happen. Set to \"bedrock\" once Bedrock's billing block above is resolved and you want it back as an automatic secondary."
 }
 
 variable "bedrock_model_id" {
@@ -148,8 +148,9 @@ variable "llm_base_url" {
 }
 
 variable "llm_model_name" {
-  type    = string
-  default = "meta/llama-3.1-8b-instruct"
+  description = "meta/llama-3.1-8b-instruct (the prior default) reached end-of-life on NVIDIA NIM on 2026-08-26, the same day this was last changed - verified live against a real key. meta/llama-3.2-11b-vision-instruct confirmed working with a real chat completion call the same day; re-verify before trusting this default again if NIM's catalog changes."
+  type        = string
+  default     = "meta/llama-3.2-11b-vision-instruct"
 }
 
 variable "llm_api_key" {
@@ -169,6 +170,11 @@ variable "jina_api_key" {
 variable "jina_embedding_model" {
   type    = string
   default = "jina-embeddings-v3"
+}
+
+variable "jina_rerank_model" {
+  type    = string
+  default = "jina-reranker-v2-base-multilingual"
 }
 
 variable "cors_allowed_origin" {

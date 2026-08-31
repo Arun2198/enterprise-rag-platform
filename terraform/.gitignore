@@ -6,3 +6,6 @@
 crash.log
 crash.*.log
 .terraform.tfstate.lock.info
+*.tfplan
+*.tfplan.out
+tfplan*.out

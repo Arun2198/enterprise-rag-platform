@@ -58,7 +58,7 @@ resource "aws_security_group" "alb" {
 
 resource "aws_security_group" "ecs_tasks" {
   name        = "${var.project_name}-ecs-tasks-sg"
-  description = "Inbound only from the ALB, on the app's container port."
+  description = "Inbound only from the ALB, on the app container port."
   vpc_id      = data.aws_vpc.default[0].id
 
   ingress {

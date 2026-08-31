@@ -1,0 +1,52 @@
+name: Build and push image (manual)
+
+# Deliberately separate from deploy-aws.yml's own build-and-push step:
+# that workflow's deploy job targets ECS Express Mode specifically,
+# which is a different deployment path from the Terraform-managed
+# standard ECS Fargate + ALB service (see terraform/README.md). This
+# workflow only builds and pushes to ECR - nothing here ever calls
+# amazon-ecs-deploy-express-service or touches an ECS service, so it's
+# safe to run regardless of which deployment path is currently active.
+
+on:
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+jobs:
+  build-and-push:
+    name: Build and push to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions-ecs-deploy-role
+          role-session-name: GitHubActionsImageBuildPush
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Get short commit hash
+        run: echo "IMAGE_TAG=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+
+      - name: Build, tag, and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
