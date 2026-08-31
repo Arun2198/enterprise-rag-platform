@@ -178,9 +178,9 @@ variable "jina_rerank_model" {
 }
 
 variable "cors_allowed_origin" {
-  description = "Origin allowed to call the API from a browser (the frontend's own URL). Empty string leaves CORS disabled entirely, matching the app's own default."
+  description = "Origin allowed to call the API from a browser (the frontend's own URL) - defaults to this project's real S3-hosted frontend origin (see frontend/index.html and s3.tf) so a fresh apply just works. Empty string leaves CORS disabled entirely, matching the app's own default."
   type        = string
-  default     = ""
+  default     = "http://enterprise-rag-platform-frontend-849279003696.s3-website-us-east-1.amazonaws.com"
 }
 
 # --- Existing resources this module deliberately does NOT create ----

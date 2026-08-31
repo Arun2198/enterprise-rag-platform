@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Enterprise RAG Platform</title>
+<style>
+  /* Plain HTML/CSS/JS, no framework, no build step - matches this
+     project's own stated tech-stack philosophy. Talks directly to the
+     API (ALB) and to Cognito's own InitiateAuth endpoint - no backend
+     of its own. */
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --accent: #4f8cff;
+    --ok: #3ecf8e;
+    --warn: #e0a52f;
+    --err: #e0555f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 24px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+  }
+  .panel h2 { font-size: 1rem; margin: 0 0 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=password], input[type=number], textarea {
+    width: 100%;
+    background: #10131a;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 8px 10px;
+    font-size: 0.95rem;
+    font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 9px 16px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    margin-top: 12px;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 120px; }
+  .status-line { font-size: 0.85rem; margin-top: 10px; }
+  .status-line.ok { color: var(--ok); }
+  .status-line.err { color: var(--err); }
+  .status-line.warn { color: var(--warn); }
+  #whoami { font-size: 0.85rem; color: var(--muted); }
+  #whoami b { color: var(--text); }
+  .answer-box { background: #10131a; border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-top: 14px; white-space: pre-wrap; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .badge { font-size: 0.75rem; padding: 3px 9px; border-radius: 20px; background: #10131a; border: 1px solid var(--border); }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .badge.err { color: var(--err); border-color: var(--err); }
+  .source-item { font-size: 0.82rem; color: var(--muted); border-top: 1px solid var(--border); padding: 8px 0; }
+  .source-item:first-child { border-top: none; }
+  .hidden { display: none; }
+  pre.raw { font-size: 0.75rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Enterprise RAG Platform</h1>
+  <p class="sub">Talks directly to the deployed API - no server of its own.</p>
+
+  <!-- ============ Config panel ============ -->
+  <div class="panel" id="config-panel">
+    <h2>Connection</h2>
+    <label for="api-base">API base URL</label>
+    <input type="text" id="api-base" value="http://enterprise-rag-platform-alb-1344927373.us-east-1.elb.amazonaws.com">
+    <label for="cognito-region">Cognito region</label>
+    <input type="text" id="cognito-region" value="us-east-1">
+    <label for="cognito-client-id">Cognito app client ID</label>
+    <input type="text" id="cognito-client-id" value="43e8gb73i2g3b3a9kop8dos53u">
+  </div>
+
+  <!-- ============ Login panel ============ -->
+  <div class="panel" id="login-panel">
+    <h2>Sign in</h2>
+    <div class="row">
+      <div>
+        <label for="username">Username</label>
+        <input type="text" id="username" autocomplete="username">
+      </div>
+      <div>
+        <label for="password">Password</label>
+        <input type="password" id="password" autocomplete="current-password">
+      </div>
+      <div>
+        <button id="login-btn">Sign in</button>
+      </div>
+    </div>
+    <div id="login-status" class="status-line"></div>
+  </div>
+
+  <div class="panel hidden" id="session-panel">
+    <h2>Session</h2>
+    <div id="whoami"></div>
+    <button class="secondary" id="logout-btn">Sign out</button>
+  </div>
+
+  <!-- ============ Ask panel ============ -->
+  <div class="panel hidden" id="ask-panel">
+    <h2>Ask</h2>
+    <label for="query">Question</label>
+    <textarea id="query" placeholder="What does the document say about..."></textarea>
+    <div class="row">
+      <div>
+        <label for="top-k">top_k</label>
+        <input type="number" id="top-k" value="5" min="1" max="20">
+      </div>
+      <div>
+        <button id="ask-btn">Ask</button>
+      </div>
+    </div>
+    <div id="ask-status" class="status-line"></div>
+    <div id="answer-container" class="hidden">
+      <div class="answer-box" id="answer-text"></div>
+      <div class="badges" id="answer-badges"></div>
+      <div id="sources"></div>
+    </div>
+  </div>
+
+  <!-- ============ Upload/ingest panel ============ -->
+  <div class="panel hidden" id="upload-panel">
+    <h2>Upload a document</h2>
+    <label for="file-input">File (.pdf, .docx, .md, .markdown)</label>
+    <input type="file" id="file-input" accept=".pdf,.docx,.md,.markdown">
+    <button id="upload-btn">Upload</button>
+    <div id="upload-status" class="status-line"></div>
+    <div id="job-controls" class="hidden">
+      <button class="secondary" id="check-job-btn">Check job status</button>
+      <div id="job-status" class="status-line"></div>
+    </div>
+  </div>
+
+  <!-- ============ Raw response (debugging) ============ -->
+  <div class="panel hidden" id="raw-panel">
+    <h2>Last raw response</h2>
+    <pre class="raw" id="raw-output"></pre>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  let idToken = null;
+  let currentJobId = null;
+
+  const $ = (id) => document.getElementById(id);
+
+  function apiBase() {
+    return $("api-base").value.replace(/\/$/, "");
+  }
+
+  function setStatus(el, message, kind) {
+    el.textContent = message;
+    el.className = "status-line" + (kind ? " " + kind : "");
+  }
+
+  function showRaw(data) {
+    $("raw-panel").classList.remove("hidden");
+    $("raw-output").textContent = JSON.stringify(data, null, 2);
+  }
+
+  function decodeJwtClaims(token) {
+    const payload = token.split(".")[1];
+    const json = decodeURIComponent(
+      atob(payload.replace(/-/g, "+").replace(/_/g, "/"))
+        .split("")
+        .map((c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0"))
+        .join("")
+    );
+    return JSON.parse(json);
+  }
+
+  // --- Cognito login: calls InitiateAuth directly, no AWS SDK needed
+  // (the app client has no secret, so a plain browser fetch works).
+  async function login() {
+    const username = $("username").value.trim();
+    const password = $("password").value;
+    const region = $("cognito-region").value.trim();
+    const clientId = $("cognito-client-id").value.trim();
+
+    if (!username || !password) {
+      setStatus($("login-status"), "Enter a username and password.", "err");
+      return;
+    }
+
+    setStatus($("login-status"), "Signing in...", "");
+    $("login-btn").disabled = true;
+
+    try {
+      const response = await fetch(`https://cognito-idp.${region}.amazonaws.com/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-amz-json-1.1",
+          "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth"
+        },
+        body: JSON.stringify({
+          AuthFlow: "USER_PASSWORD_AUTH",
+          ClientId: clientId,
+          AuthParameters: { USERNAME: username, PASSWORD: password }
+        })
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || data.__type || "sign-in failed");
+      }
+
+      idToken = data.AuthenticationResult.IdToken;
+      onSignedIn();
+    } catch (err) {
+      setStatus($("login-status"), "Sign-in failed: " + err.message, "err");
+    } finally {
+      $("login-btn").disabled = false;
+    }
+  }
+
+  function onSignedIn() {
+    const claims = decodeJwtClaims(idToken);
+    const role = claims.role || "read_only (default - token has no role claim)";
+    $("whoami").innerHTML =
+      `Signed in as <b>${claims.email || claims.sub}</b> &middot; role: <b>${role}</b>`;
+    $("login-panel").classList.add("hidden");
+    $("session-panel").classList.remove("hidden");
+    $("ask-panel").classList.remove("hidden");
+    $("upload-panel").classList.remove("hidden");
+    setStatus($("login-status"), "", "");
+    $("password").value = "";
+  }
+
+  function logout() {
+    idToken = null;
+    currentJobId = null;
+    $("session-panel").classList.add("hidden");
+    $("ask-panel").classList.add("hidden");
+    $("upload-panel").classList.add("hidden");
+    $("login-panel").classList.remove("hidden");
+    $("answer-container").classList.add("hidden");
+    $("job-controls").classList.add("hidden");
+  }
+
+  async function authedFetch(path, options) {
+    options = options || {};
+    options.headers = Object.assign({}, options.headers, {
+      Authorization: "Bearer " + idToken
+    });
+    const response = await fetch(apiBase() + path, options);
+    let data = null;
+    try { data = await response.json(); } catch (e) { /* no body */ }
+    return { response, data };
+  }
+
+  function renderGuardrailBadges(flags) {
+    const container = $("answer-badges");
+    container.innerHTML = "";
+
+    if (!flags) return;
+
+    const entries = [
+      ["groundedness", flags.groundedness != null ? flags.groundedness.toFixed(2) : null, "ok"],
+      ["hallucination", flags.hallucination, flags.hallucination ? "warn" : "ok"],
+      ["pii_detected", flags.pii_detected, flags.pii_detected ? "warn" : "ok"],
+      ["low_retrieval_relevance", flags.low_retrieval_relevance, flags.low_retrieval_relevance ? "warn" : "ok"]
+    ];
+
+    for (const [label, value, kind] of entries) {
+      if (value === null || value === undefined) continue;
+      const span = document.createElement("span");
+      span.className = "badge " + kind;
+      span.textContent = `${label}: ${value}`;
+      container.appendChild(span);
+    }
+  }
+
+  function renderSources(sources) {
+    const container = $("sources");
+    container.innerHTML = "";
+
+    if (!sources || sources.length === 0) return;
+
+    const heading = document.createElement("div");
+    heading.style.marginTop = "12px";
+    heading.style.fontSize = "0.8rem";
+    heading.style.color = "var(--muted)";
+    heading.textContent = `${sources.length} source(s)`;
+    container.appendChild(heading);
+
+    for (const source of sources) {
+      const div = document.createElement("div");
+      div.className = "source-item";
+      div.textContent = `${source.document_id || source.chunk_id || "chunk"} - score ${
+        source.score != null ? source.score.toFixed(3) : "n/a"
+      }`;
+      container.appendChild(div);
+    }
+  }
+
+  async function ask() {
+    const query = $("query").value.trim();
+
+    if (!query) {
+      setStatus($("ask-status"), "Enter a question first.", "err");
+      return;
+    }
+
+    setStatus($("ask-status"), "Asking...", "");
+    $("ask-btn").disabled = true;
+    $("answer-container").classList.add("hidden");
+
+    try {
+      const { response, data } = await authedFetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: query,
+          top_k: parseInt($("top-k").value, 10) || 5
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error((data && data.detail) || `request failed (${response.status})`);
+      }
+
+      $("answer-text").textContent = data.answer;
+      renderGuardrailBadges(data.guardrail_flags);
+      renderSources(data.sources);
+      $("answer-container").classList.remove("hidden");
+      setStatus($("ask-status"), "", "");
+      showRaw(data);
+    } catch (err) {
+      setStatus($("ask-status"), err.message, "err");
+    } finally {
+      $("ask-btn").disabled = false;
+    }
+  }
+
+  async function upload() {
+    const fileInput = $("file-input");
+
+    if (!fileInput.files.length) {
+      setStatus($("upload-status"), "Choose a file first.", "err");
+      return;
+    }
+
+    setStatus($("upload-status"), "Uploading...", "");
+    $("upload-btn").disabled = true;
+
+    try {
+      const formData = new FormData();
+      formData.append("file", fileInput.files[0]);
+
+      const { response, data } = await authedFetch("/documents", {
+        method: "POST",
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error((data && data.detail) || `upload failed (${response.status})`);
+      }
+
+      currentJobId = data.job_id;
+      setStatus(
+        $("upload-status"),
+        `Uploaded - document_id ${data.document_id}, job ${data.job_id}, status ${data.status}`,
+        "ok"
+      );
+      $("job-controls").classList.remove("hidden");
+      showRaw(data);
+    } catch (err) {
+      setStatus($("upload-status"), err.message, "err");
+    } finally {
+      $("upload-btn").disabled = false;
+    }
+  }
+
+  async function checkJob() {
+    if (!currentJobId) return;
+
+    try {
+      const { response, data } = await authedFetch(`/documents/jobs/${currentJobId}`);
+
+      if (!response.ok) {
+        throw new Error((data && data.detail) || `status check failed (${response.status})`);
+      }
+
+      const kind = data.status === "INDEXED" ? "ok" : data.status === "FAILED" ? "err" : "warn";
+      setStatus($("job-status"), `Status: ${data.status}`, kind);
+      showRaw(data);
+    } catch (err) {
+      setStatus($("job-status"), err.message, "err");
+    }
+  }
+
+  $("login-btn").addEventListener("click", login);
+  $("logout-btn").addEventListener("click", logout);
+  $("ask-btn").addEventListener("click", ask);
+  $("upload-btn").addEventListener("click", upload);
+  $("check-job-btn").addEventListener("click", checkJob);
+
+  // Enter-to-submit on the login fields
+  $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+})();
+</script>
+</body>
+</html>
