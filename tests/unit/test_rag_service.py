@@ -244,7 +244,7 @@ def test_ask_forwards_reranked_chunks_unchanged_to_answerer(tmp_path):
 
     class RecordingAnswerer:
 
-        def answer(self, query, retrieved_chunks):
+        def answer(self, query, retrieved_chunks, history=None):
             captured["chunks"] = retrieved_chunks
             captured["query"] = query
             return "recorded answer"
@@ -297,7 +297,7 @@ class _FixedAnswerer:
     def __init__(self, answer: str):
         self._answer = answer
 
-    def answer(self, query, retrieved_chunks):
+    def answer(self, query, retrieved_chunks, history=None):
         return self._answer
 
 

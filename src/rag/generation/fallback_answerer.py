@@ -1,6 +1,7 @@
 import logging
 
 from rag.generation.base import Answerer
+from rag.generation.prompt import ConversationTurn
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
@@ -27,10 +28,11 @@ class FallbackAnswerer:
     def answer(
         self,
         query: str,
-        retrieved_chunks: list[RetrievedChunk]
+        retrieved_chunks: list[RetrievedChunk],
+        history: list[ConversationTurn] | None = None
     ) -> str:
         try:
-            return self.primary.answer(query, retrieved_chunks)
+            return self.primary.answer(query, retrieved_chunks, history=history)
         except Exception as ex:
             logger.warning(
                 "primary_answerer_failed_falling_back",
@@ -40,4 +42,4 @@ class FallbackAnswerer:
                     "error_type": type(ex).__name__
                 }
             )
-            return self.fallback.answer(query, retrieved_chunks)
+            return self.fallback.answer(query, retrieved_chunks, history=history)

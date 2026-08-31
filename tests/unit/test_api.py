@@ -868,3 +868,147 @@ def test_get_job_status_returns_404_for_an_unknown_job(monkeypatch):
 def replace_setting(settings, field_name, value):
     from dataclasses import replace
     return replace(settings, **{field_name: value})
+
+
+class _FakeS3ClientForConversations:
+    """
+    Minimal fake matching what ConversationStore actually calls -
+    put_object/get_object/delete_object/get_paginator - same shape as
+    _FakeS3ClientForBackups above, kept separate since ConversationStore
+    expects a real client.exceptions.NoSuchKey rather than a plain KeyError.
+    """
+
+    class _NoSuchKey(Exception):
+        pass
+
+    class _Exceptions:
+        pass
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.exceptions = self._Exceptions()
+        self.exceptions.NoSuchKey = self._NoSuchKey
+
+    def put_object(self, Bucket, Key, Body, ContentType=None):
+        self.objects[Key] = Body
+
+    def get_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise self.exceptions.NoSuchKey()
+
+        class _Body:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self):
+                return self._data
+
+        return {"Body": _Body(self.objects[Key])}
+
+    def delete_object(self, Bucket, Key):
+        self.objects.pop(Key, None)
+
+    def get_paginator(self, name):
+        objects = self.objects
+
+        class _Paginator:
+            def paginate(self, Bucket, Prefix):
+                keys = [key for key in objects if key.startswith(Prefix)]
+                yield {"Contents": [{"Key": key} for key in keys]}
+
+        return _Paginator()
+
+
+def test_ask_returns_503_when_conversation_id_given_but_store_not_configured(monkeypatch):
+
+    monkeypatch.setattr(main_module, "conversation_store", None)
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "anything", "conversation_id": "some-id"})
+
+    assert response.status_code == 503
+    assert "S3_BUCKET" in response.json()["detail"]
+
+
+def test_conversations_endpoints_return_503_when_not_configured(monkeypatch):
+
+    monkeypatch.setattr(main_module, "conversation_store", None)
+    client = TestClient(app)
+
+    assert client.post("/conversations", json={}).status_code == 503
+    assert client.get("/conversations").status_code == 503
+    assert client.get("/conversations/some-id").status_code == 503
+    assert client.delete("/conversations/some-id").status_code == 503
+
+
+def test_full_conversation_flow_persists_and_threads_history(tmp_path, monkeypatch):
+    from app.conversation_store import ConversationStore
+
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
+    store = ConversationStore(client=_FakeS3ClientForConversations(), bucket_name="fake-bucket")
+    monkeypatch.setattr(main_module, "conversation_store", store)
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text(
+        "Employees receive 20 days of paid leave annually.",
+        encoding="utf-8"
+    )
+    client = TestClient(app)
+    client.post("/ingest", json={"file_paths": [str(file_path)]})
+
+    created = client.post("/conversations", json={"title": "Leave policy"})
+    assert created.status_code == 200
+    conversation_id = created.json()["conversation_id"]
+    assert created.json()["turn_count"] == 0
+
+    ask_response = client.post(
+        "/ask",
+        json={"query": "How many leave days do employees get?", "conversation_id": conversation_id}
+    )
+    assert ask_response.status_code == 200
+    assert ask_response.json()["conversation_id"] == conversation_id
+
+    detail = client.get(f"/conversations/{conversation_id}")
+    assert detail.status_code == 200
+    turns = detail.json()["turns"]
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert turns[0]["content"] == "How many leave days do employees get?"
+
+    listing = client.get("/conversations")
+    assert listing.status_code == 200
+    assert any(c["conversation_id"] == conversation_id for c in listing.json())
+
+    deleted = client.delete(f"/conversations/{conversation_id}")
+    assert deleted.status_code == 200
+    assert client.get(f"/conversations/{conversation_id}").status_code == 404
+
+
+def test_ask_with_unknown_conversation_id_returns_404(monkeypatch):
+    from app.conversation_store import ConversationStore
+
+    store = ConversationStore(client=_FakeS3ClientForConversations(), bucket_name="fake-bucket")
+    monkeypatch.setattr(main_module, "conversation_store", store)
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"query": "anything", "conversation_id": "does-not-exist"})
+
+    assert response.status_code == 404
+
+
+def test_conversation_is_scoped_to_the_owning_user(monkeypatch):
+    """
+    AUTH_ENABLED defaults to false, so every request runs as the same
+    synthetic _AUTH_DISABLED_USER subject - this just confirms a
+    conversation created under one user id is invisible under another,
+    which is the real security property once auth is on.
+    """
+    from app.conversation_store import ConversationStore
+
+    store = ConversationStore(client=_FakeS3ClientForConversations(), bucket_name="fake-bucket")
+    other_user_conversation = store.create_conversation("someone-else")
+    monkeypatch.setattr(main_module, "conversation_store", store)
+    client = TestClient(app)
+
+    response = client.get(f"/conversations/{other_user_conversation.conversation_id}")
+
+    assert response.status_code == 404

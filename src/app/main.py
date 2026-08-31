@@ -10,6 +10,7 @@ from app.auth import AuthenticatedUser
 from app.auth import AuthenticationError
 from app.auth import OIDCTokenValidator
 from app.config import load_settings
+from app.conversation_store import ConversationNotFoundError
 from app.observability import CloudWatchEMFMetricExporter
 from app.rate_limiter import InMemoryRateLimiter
 from app.schemas import AskDebugResponse
@@ -18,6 +19,10 @@ from app.schemas import AskResponse
 from app.schemas import BackupRestoreRequest
 from app.schemas import BackupRestoreResponse
 from app.schemas import CandidateTraceResponse
+from app.schemas import ConversationCreateRequest
+from app.schemas import ConversationDetailResponse
+from app.schemas import ConversationSummaryResponse
+from app.schemas import ConversationTurnResponse
 from app.schemas import DocumentDeleteResponse
 from app.schemas import DocumentUploadResponse
 from app.schemas import FeatureFlagResponse
@@ -29,6 +34,7 @@ from app.schemas import JobStatusResponse
 from app.schemas import ReindexRequest
 from app.schemas import RetrievalTraceResponse
 from app.schemas import ScheduledJobResponse
+from app.service_factory import build_conversation_store
 from app.service_factory import build_ingestion_job_store
 from app.service_factory import build_platform_manager
 from app.service_factory import build_rag_service
@@ -45,6 +51,7 @@ from mlops.permissions import require_permission as mlops_require_permission
 from mlops.scheduler import JobNotFoundError
 from mlops.schemas import Permission
 from mlops.schemas import Role
+from rag.generation.prompt import ConversationTurn
 
 try:
     from fastapi import Depends
@@ -118,6 +125,7 @@ rag_service = None
 token_validator: OIDCTokenValidator | None = None
 s3_document_store = None
 ingestion_job_store = None
+conversation_store = None
 sqs_client = None
 sqs_ingestion_worker = None
 scheduler_sqs_client = None
@@ -129,6 +137,7 @@ try:
     rag_service = build_rag_service(settings, platform_manager=platform_manager)
     s3_document_store = build_s3_document_store(settings)
     ingestion_job_store = build_ingestion_job_store(settings)
+    conversation_store = build_conversation_store(settings)
     sqs_client = build_sqs_client(settings)
     scheduler_sqs_client = build_scheduler_sqs_client(settings)
     scheduler_sqs_worker = build_scheduler_sqs_worker(settings, platform_manager, scheduler_sqs_client)
@@ -584,15 +593,62 @@ if FastAPI is not None:
                 detail=f"service unavailable: {startup_error}"
             )
 
-        return rag_service.ask(
+        history: list[ConversationTurn] | None = None
+
+        if request.conversation_id is not None:
+            if conversation_store is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="conversation memory is not configured (S3_BUCKET not set)"
+                )
+
+            # user.subject scopes the lookup - a caller can only ever
+            # continue their own conversation, never one addressed by id
+            # alone (see ConversationStore's docstring on key namespacing).
+            conversation = conversation_store.get_conversation(request.conversation_id, user.subject)
+
+            if conversation is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"unknown conversation: {request.conversation_id}"
+                )
+
+            history = [
+                ConversationTurn(role=turn.role, content=turn.content) for turn in conversation.turns
+            ]
+
+        response = rag_service.ask(
             query=request.query,
             top_k=request.top_k,
             client_id=request.client_id,
             # from the validated token's own claims, never the request
             # body - a caller cannot claim arbitrary access groups for
             # themselves.
-            access_groups=user.claims.get("access_groups")
+            access_groups=user.claims.get("access_groups"),
+            history=history
         )
+
+        if request.conversation_id is not None and conversation_store is not None:
+            # The server writes both turns itself from what it actually
+            # asked/answered - a client has no way to inject arbitrary
+            # "assistant" text into a conversation's stored history.
+            try:
+                conversation_store.append_turns(
+                    request.conversation_id,
+                    user.subject,
+                    [("user", request.query), ("assistant", response.answer)]
+                )
+            except ConversationNotFoundError:
+                # Deleted between the get_conversation() lookup above and
+                # this write (another tab, a concurrent delete request) -
+                # the answer itself is still valid, just not persisted.
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"conversation was deleted mid-request: {request.conversation_id}"
+                ) from None
+            response.conversation_id = request.conversation_id
+
+        return response
 
     @app.post("/ask/debug", response_model=AskDebugResponse)
     def ask_debug(
@@ -644,6 +700,94 @@ if FastAPI is not None:
                 stage_timings_ms=trace.stage_timings_ms
             )
         )
+
+    @app.post("/conversations", response_model=ConversationSummaryResponse)
+    def create_conversation(
+        request: ConversationCreateRequest,
+        user: AuthenticatedUser = Depends(require_permission(Permission.QUERY))
+    ) -> ConversationSummaryResponse:
+        if conversation_store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="conversation memory is not configured (S3_BUCKET not set)"
+            )
+
+        conversation = conversation_store.create_conversation(
+            user.subject,
+            title=request.title or "New chat"
+        )
+        return ConversationSummaryResponse(
+            conversation_id=conversation.conversation_id,
+            title=conversation.title,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+            turn_count=len(conversation.turns)
+        )
+
+    @app.get("/conversations", response_model=list[ConversationSummaryResponse])
+    def list_conversations(
+        user: AuthenticatedUser = Depends(require_permission(Permission.QUERY))
+    ) -> list[ConversationSummaryResponse]:
+        if conversation_store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="conversation memory is not configured (S3_BUCKET not set)"
+            )
+
+        return [
+            ConversationSummaryResponse(
+                conversation_id=c.conversation_id,
+                title=c.title,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+                turn_count=len(c.turns)
+            )
+            for c in conversation_store.list_conversations(user.subject)
+        ]
+
+    @app.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+    def get_conversation(
+        conversation_id: str,
+        user: AuthenticatedUser = Depends(require_permission(Permission.QUERY))
+    ) -> ConversationDetailResponse:
+        if conversation_store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="conversation memory is not configured (S3_BUCKET not set)"
+            )
+
+        conversation = conversation_store.get_conversation(conversation_id, user.subject)
+
+        if conversation is None:
+            raise HTTPException(status_code=404, detail=f"unknown conversation: {conversation_id}")
+
+        return ConversationDetailResponse(
+            conversation_id=conversation.conversation_id,
+            title=conversation.title,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+            turns=[
+                ConversationTurnResponse(role=t.role, content=t.content, created_at=t.created_at)
+                for t in conversation.turns
+            ]
+        )
+
+    @app.delete("/conversations/{conversation_id}")
+    def delete_conversation(
+        conversation_id: str,
+        user: AuthenticatedUser = Depends(require_permission(Permission.QUERY))
+    ) -> dict[str, str]:
+        if conversation_store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="conversation memory is not configured (S3_BUCKET not set)"
+            )
+
+        # Ownership is enforced structurally by the S3 key (user.subject
+        # is part of it) - deleting an id that doesn't exist or isn't
+        # this user's is a harmless no-op, same as S3's own delete_object.
+        conversation_store.delete_conversation(conversation_id, user.subject)
+        return {"conversation_id": conversation_id, "status": "deleted"}
 
     @app.get("/admin/feature-flags", response_model=list[FeatureFlagResponse])
     def list_feature_flags(

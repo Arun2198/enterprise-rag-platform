@@ -1,5 +1,6 @@
 import re
 
+from rag.generation.prompt import ConversationTurn
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 
@@ -9,12 +10,18 @@ class ExtractiveAnswerer:
 
     It intentionally answers only from retrieved text. A managed LLM gateway can
     replace this class while keeping the same service-level contract.
+
+    Accepts history for Answerer Protocol compatibility but ignores it -
+    picking the best-overlap sentence from retrieved chunks has no
+    concept of multi-turn conversation to reason over; there's no LLM
+    call here to give the history to.
     """
 
     def answer(
         self,
         query: str,
-        retrieved_chunks: list[RetrievedChunk]
+        retrieved_chunks: list[RetrievedChunk],
+        history: list[ConversationTurn] | None = None
     ) -> str:
         if not retrieved_chunks:
             return "I could not find relevant context in the indexed documents."

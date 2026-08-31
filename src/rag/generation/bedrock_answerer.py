@@ -1,6 +1,7 @@
 import time
 from typing import Any
 
+from rag.generation.prompt import ConversationTurn
 from rag.generation.prompt import build_grounded_prompt
 from rag.generation.telemetry import record_generation
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
@@ -33,12 +34,13 @@ class BedrockAnswerer:
     def answer(
         self,
         query: str,
-        retrieved_chunks: list[RetrievedChunk]
+        retrieved_chunks: list[RetrievedChunk],
+        history: list[ConversationTurn] | None = None
     ) -> str:
         if not retrieved_chunks:
             return "I could not find relevant context in the indexed documents."
 
-        prompt = build_grounded_prompt(query, retrieved_chunks)
+        prompt = build_grounded_prompt(query, retrieved_chunks, history=history)
         started_at = time.monotonic()
         response = self.client.converse(
             modelId=self.model_id,

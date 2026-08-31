@@ -39,6 +39,7 @@ class Settings:
     s3_max_file_size_mb: int = 25
     s3_jobs_prefix: str = "jobs/"
     mlops_backup_s3_prefix: str = "mlops_backups/"
+    conversations_s3_prefix: str = "conversations/"
     sqs_queue_url: str | None = None
     sqs_poll_interval_seconds: float = 20.0
     scheduler_queue_url: str | None = None
@@ -137,6 +138,7 @@ def load_settings() -> Settings:
         s3_failed_prefix=os.getenv("S3_FAILED_PREFIX", "failed/"),
         s3_max_file_size_mb=int(os.getenv("S3_MAX_FILE_SIZE_MB", "25")),
         s3_jobs_prefix=os.getenv("S3_JOBS_PREFIX", "jobs/"),
+        conversations_s3_prefix=os.getenv("CONVERSATIONS_S3_PREFIX", "conversations/"),
         sqs_queue_url=os.getenv("SQS_QUEUE_URL"),
         sqs_poll_interval_seconds=float(os.getenv("SQS_POLL_INTERVAL_SECONDS", "20")),
         scheduler_queue_url=os.getenv("SCHEDULER_QUEUE_URL"),

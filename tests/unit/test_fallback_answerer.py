@@ -8,7 +8,7 @@ class _StubAnswerer:
         self.error = error
         self.calls = []
 
-    def answer(self, query, retrieved_chunks):
+    def answer(self, query, retrieved_chunks, history=None):
         self.calls.append((query, retrieved_chunks))
 
         if self.error is not None:

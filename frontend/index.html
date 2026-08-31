@@ -29,7 +29,7 @@
     padding: 24px;
     line-height: 1.5;
   }
-  .wrap { max-width: 860px; margin: 0 auto; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 24px; }
   .panel {
@@ -65,6 +65,8 @@
   button:hover { filter: brightness(1.1); }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.link { background: none; border: none; color: var(--muted); margin: 0; padding: 2px 6px; font-size: 0.8rem; }
+  button.link:hover { color: var(--err); filter: none; }
   .row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
   .row > div { flex: 1; min-width: 120px; }
   .status-line { font-size: 0.85rem; margin-top: 10px; }
@@ -73,16 +75,74 @@
   .status-line.warn { color: var(--warn); }
   #whoami { font-size: 0.85rem; color: var(--muted); }
   #whoami b { color: var(--text); }
-  .answer-box { background: #10131a; border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-top: 14px; white-space: pre-wrap; }
-  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
   .badge { font-size: 0.75rem; padding: 3px 9px; border-radius: 20px; background: #10131a; border: 1px solid var(--border); }
   .badge.ok { color: var(--ok); border-color: var(--ok); }
   .badge.warn { color: var(--warn); border-color: var(--warn); }
   .badge.err { color: var(--err); border-color: var(--err); }
-  .source-item { font-size: 0.82rem; color: var(--muted); border-top: 1px solid var(--border); padding: 8px 0; }
+  .source-item { font-size: 0.78rem; color: var(--muted); border-top: 1px solid var(--border); padding: 6px 0; }
   .source-item:first-child { border-top: none; }
   .hidden { display: none; }
   pre.raw { font-size: 0.75rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; margin-top: 10px; }
+
+  /* ---- Chat panel ---- */
+  #chat-panel { padding: 0; overflow: hidden; }
+  .chat-layout { display: flex; height: 560px; }
+  .chat-sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+  }
+  .chat-sidebar h2 { margin: 0 0 12px; }
+  #new-chat-btn { margin-top: 0; margin-bottom: 12px; width: 100%; }
+  #conversation-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  .conversation-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .conversation-item:hover { background: #10131a; }
+  .conversation-item.active { background: #10131a; border: 1px solid var(--accent); }
+  .conversation-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .conversation-empty { color: var(--muted); font-size: 0.82rem; padding: 8px 10px; }
+  .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .chat-thread { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
+  .chat-empty { color: var(--muted); font-size: 0.9rem; margin: auto; text-align: center; }
+  .message { max-width: 78%; }
+  .message.user { align-self: flex-end; }
+  .message.assistant { align-self: flex-start; }
+  .message-bubble {
+    padding: 10px 14px;
+    border-radius: 12px;
+    white-space: pre-wrap;
+    font-size: 0.93rem;
+  }
+  .message.user .message-bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
+  .message.assistant .message-bubble { background: #10131a; border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+  .message-meta { margin-top: 6px; }
+  .chat-input-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    padding: 14px 24px;
+    border-top: 1px solid var(--border);
+  }
+  .chat-input-row textarea { min-height: 44px; max-height: 160px; }
+  .chat-input-row button { margin-top: 0; flex-shrink: 0; }
+  #chat-status { padding: 0 24px 10px; margin: 0; }
 </style>
 </head>
 <body>
@@ -126,25 +186,28 @@
     <button class="secondary" id="logout-btn">Sign out</button>
   </div>
 
-  <!-- ============ Ask panel ============ -->
-  <div class="panel hidden" id="ask-panel">
-    <h2>Ask</h2>
-    <label for="query">Question</label>
-    <textarea id="query" placeholder="What does the document say about..."></textarea>
-    <div class="row">
-      <div>
-        <label for="top-k">top_k</label>
-        <input type="number" id="top-k" value="5" min="1" max="20">
+  <!-- ============ Chat panel ============ -->
+  <div class="panel hidden" id="chat-panel">
+    <div class="chat-layout">
+      <div class="chat-sidebar">
+        <h2>Chats</h2>
+        <button id="new-chat-btn">+ New chat</button>
+        <div id="conversation-list"></div>
       </div>
-      <div>
-        <button id="ask-btn">Ask</button>
+      <div class="chat-main">
+        <div id="chat-thread" class="chat-thread">
+          <div class="chat-empty" id="chat-empty-hint">
+            Ask a question below to start a new chat. Sign in with an account
+            that has conversation memory configured to keep chat history
+            across sessions.
+          </div>
+        </div>
+        <div id="chat-status" class="status-line"></div>
+        <div class="chat-input-row">
+          <textarea id="query" placeholder="Ask a question..." rows="1"></textarea>
+          <button id="ask-btn">Send</button>
+        </div>
       </div>
-    </div>
-    <div id="ask-status" class="status-line"></div>
-    <div id="answer-container" class="hidden">
-      <div class="answer-box" id="answer-text"></div>
-      <div class="badges" id="answer-badges"></div>
-      <div id="sources"></div>
     </div>
   </div>
 
@@ -174,6 +237,18 @@
 
   let idToken = null;
   let currentJobId = null;
+
+  // Chat state. activeConversationId is null until either the user picks
+  // an existing chat from the sidebar or sends the first message of a
+  // brand-new one (which lazily creates the conversation server-side -
+  // see sendMessage()). messages mirrors what's rendered in the thread;
+  // historical turns loaded via GET /conversations/{id} only ever carry
+  // role/content (ConversationStore doesn't persist sources/guardrail
+  // flags), so only the message from the most recent /ask call in this
+  // tab gets badges/sources attached.
+  let activeConversationId = null;
+  let messages = [];
+  let conversations = [];
 
   const $ = (id) => document.getElementById(id);
 
@@ -253,21 +328,26 @@
       `Signed in as <b>${claims.email || claims.sub}</b> &middot; role: <b>${role}</b>`;
     $("login-panel").classList.add("hidden");
     $("session-panel").classList.remove("hidden");
-    $("ask-panel").classList.remove("hidden");
+    $("chat-panel").classList.remove("hidden");
     $("upload-panel").classList.remove("hidden");
     setStatus($("login-status"), "", "");
     $("password").value = "";
+    loadConversations();
   }
 
   function logout() {
     idToken = null;
     currentJobId = null;
+    activeConversationId = null;
+    messages = [];
+    conversations = [];
     $("session-panel").classList.add("hidden");
-    $("ask-panel").classList.add("hidden");
+    $("chat-panel").classList.add("hidden");
     $("upload-panel").classList.add("hidden");
     $("login-panel").classList.remove("hidden");
-    $("answer-container").classList.add("hidden");
     $("job-controls").classList.add("hidden");
+    renderThread();
+    renderConversationList();
   }
 
   async function authedFetch(path, options) {
@@ -281,11 +361,8 @@
     return { response, data };
   }
 
-  function renderGuardrailBadges(flags) {
-    const container = $("answer-badges");
-    container.innerHTML = "";
-
-    if (!flags) return;
+  function guardrailBadgesHtml(flags) {
+    if (!flags) return "";
 
     const entries = [
       ["groundedness", flags.groundedness != null ? flags.groundedness.toFixed(2) : null, "ok"],
@@ -294,72 +371,234 @@
       ["low_retrieval_relevance", flags.low_retrieval_relevance, flags.low_retrieval_relevance ? "warn" : "ok"]
     ];
 
-    for (const [label, value, kind] of entries) {
-      if (value === null || value === undefined) continue;
-      const span = document.createElement("span");
-      span.className = "badge " + kind;
-      span.textContent = `${label}: ${value}`;
-      container.appendChild(span);
-    }
+    const badges = entries
+      .filter(([, value]) => value !== null && value !== undefined)
+      .map(([label, value, kind]) => `<span class="badge ${kind}">${label}: ${value}</span>`)
+      .join("");
+
+    return badges ? `<div class="badges">${badges}</div>` : "";
   }
 
-  function renderSources(sources) {
-    const container = $("sources");
-    container.innerHTML = "";
+  function sourcesHtml(sources) {
+    if (!sources || sources.length === 0) return "";
 
-    if (!sources || sources.length === 0) return;
+    const items = sources.map((source) => {
+      const score = source.score != null ? source.score.toFixed(3) : "n/a";
+      return `<div class="source-item">${escapeHtml(source.document_id || source.chunk_id || "chunk")} - score ${score}</div>`;
+    }).join("");
 
-    const heading = document.createElement("div");
-    heading.style.marginTop = "12px";
-    heading.style.fontSize = "0.8rem";
-    heading.style.color = "var(--muted)";
-    heading.textContent = `${sources.length} source(s)`;
-    container.appendChild(heading);
-
-    for (const source of sources) {
-      const div = document.createElement("div");
-      div.className = "source-item";
-      div.textContent = `${source.document_id || source.chunk_id || "chunk"} - score ${
-        source.score != null ? source.score.toFixed(3) : "n/a"
-      }`;
-      container.appendChild(div);
-    }
+    return `<div class="message-meta">${items}</div>`;
   }
 
-  async function ask() {
-    const query = $("query").value.trim();
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text == null ? "" : String(text);
+    return div.innerHTML;
+  }
 
-    if (!query) {
-      setStatus($("ask-status"), "Enter a question first.", "err");
+  function renderThread() {
+    const thread = $("chat-thread");
+    thread.innerHTML = "";
+
+    if (messages.length === 0) {
+      const hint = document.createElement("div");
+      hint.className = "chat-empty";
+      hint.id = "chat-empty-hint";
+      hint.textContent = "Ask a question below to start a new chat.";
+      thread.appendChild(hint);
       return;
     }
 
-    setStatus($("ask-status"), "Asking...", "");
-    $("ask-btn").disabled = true;
-    $("answer-container").classList.add("hidden");
+    for (const message of messages) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "message " + message.role;
+
+      const bubble = document.createElement("div");
+      bubble.className = "message-bubble";
+      bubble.textContent = message.content;
+      wrapper.appendChild(bubble);
+
+      if (message.role === "assistant" && (message.guardrail_flags || message.sources)) {
+        const meta = document.createElement("div");
+        meta.innerHTML = guardrailBadgesHtml(message.guardrail_flags) + sourcesHtml(message.sources);
+        wrapper.appendChild(meta);
+      }
+
+      thread.appendChild(wrapper);
+    }
+
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  function renderConversationList() {
+    const list = $("conversation-list");
+    list.innerHTML = "";
+
+    if (conversations.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "conversation-empty";
+      empty.textContent = "No chats yet.";
+      list.appendChild(empty);
+      return;
+    }
+
+    for (const conversation of conversations) {
+      const item = document.createElement("div");
+      item.className = "conversation-item" + (conversation.conversation_id === activeConversationId ? " active" : "");
+
+      const title = document.createElement("span");
+      title.className = "conversation-title";
+      title.textContent = conversation.title || "New chat";
+      item.appendChild(title);
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "link";
+      deleteBtn.textContent = "×";
+      deleteBtn.title = "Delete chat";
+      deleteBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteConversation(conversation.conversation_id);
+      });
+      item.appendChild(deleteBtn);
+
+      item.addEventListener("click", () => openConversation(conversation.conversation_id));
+      list.appendChild(item);
+    }
+  }
+
+  async function loadConversations() {
+    try {
+      const { response, data } = await authedFetch("/conversations");
+
+      if (!response.ok) {
+        // 503 means S3_BUCKET isn't configured on this deployment - chat
+        // still works, it's just single-turn/stateless for this session.
+        conversations = [];
+        renderConversationList();
+        return;
+      }
+
+      conversations = data;
+      renderConversationList();
+    } catch (err) {
+      // network hiccup listing chats shouldn't block asking questions
+      conversations = [];
+      renderConversationList();
+    }
+  }
+
+  async function openConversation(conversationId) {
+    activeConversationId = conversationId;
+    renderConversationList();
+    setStatus($("chat-status"), "Loading chat...", "");
 
     try {
+      const { response, data } = await authedFetch(`/conversations/${conversationId}`);
+
+      if (!response.ok) {
+        throw new Error((data && data.detail) || `failed to load chat (${response.status})`);
+      }
+
+      messages = data.turns.map((turn) => ({ role: turn.role, content: turn.content }));
+      renderThread();
+      setStatus($("chat-status"), "", "");
+    } catch (err) {
+      setStatus($("chat-status"), err.message, "err");
+    }
+  }
+
+  function startNewChat() {
+    activeConversationId = null;
+    messages = [];
+    renderThread();
+    renderConversationList();
+    setStatus($("chat-status"), "", "");
+    $("query").focus();
+  }
+
+  async function deleteConversation(conversationId) {
+    try {
+      await authedFetch(`/conversations/${conversationId}`, { method: "DELETE" });
+    } catch (err) {
+      // best-effort - fall through to refreshing the list either way
+    }
+
+    if (activeConversationId === conversationId) {
+      startNewChat();
+    }
+
+    await loadConversations();
+  }
+
+  async function ensureActiveConversation() {
+    if (activeConversationId !== null) return activeConversationId;
+
+    // Lazily creates the conversation on the first message of a new chat
+    // rather than eagerly on "+ New chat" - an empty chat a user never
+    // sends anything into never becomes a real stored conversation.
+    const { response, data } = await authedFetch("/conversations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+
+    if (!response.ok) {
+      // conversation memory not configured (S3_BUCKET unset) - fall back
+      // to a stateless single-turn ask rather than blocking the user.
+      return null;
+    }
+
+    activeConversationId = data.conversation_id;
+    return activeConversationId;
+  }
+
+  async function sendMessage() {
+    const query = $("query").value.trim();
+
+    if (!query) return;
+
+    setStatus($("chat-status"), "", "");
+    $("ask-btn").disabled = true;
+    $("query").value = "";
+
+    messages.push({ role: "user", content: query });
+    renderThread();
+
+    try {
+      const conversationId = await ensureActiveConversation();
+      const body = { query: query, top_k: 5 };
+
+      if (conversationId !== null) {
+        body.conversation_id = conversationId;
+      }
+
       const { response, data } = await authedFetch("/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: query,
-          top_k: parseInt($("top-k").value, 10) || 5
-        })
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {
         throw new Error((data && data.detail) || `request failed (${response.status})`);
       }
 
-      $("answer-text").textContent = data.answer;
-      renderGuardrailBadges(data.guardrail_flags);
-      renderSources(data.sources);
-      $("answer-container").classList.remove("hidden");
-      setStatus($("ask-status"), "", "");
+      messages.push({
+        role: "assistant",
+        content: data.answer,
+        guardrail_flags: data.guardrail_flags,
+        sources: data.sources
+      });
+      renderThread();
       showRaw(data);
+
+      if (conversationId !== null) {
+        await loadConversations();
+        renderConversationList();
+      }
     } catch (err) {
-      setStatus($("ask-status"), err.message, "err");
+      messages.push({ role: "assistant", content: "Error: " + err.message });
+      renderThread();
+      setStatus($("chat-status"), err.message, "err");
     } finally {
       $("ask-btn").disabled = false;
     }
@@ -424,12 +663,21 @@
 
   $("login-btn").addEventListener("click", login);
   $("logout-btn").addEventListener("click", logout);
-  $("ask-btn").addEventListener("click", ask);
+  $("new-chat-btn").addEventListener("click", startNewChat);
+  $("ask-btn").addEventListener("click", sendMessage);
   $("upload-btn").addEventListener("click", upload);
   $("check-job-btn").addEventListener("click", checkJob);
 
   // Enter-to-submit on the login fields
   $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+
+  // Enter sends, Shift+Enter inserts a newline - standard chat-input behavior
+  $("query").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
 })();
 </script>
 </body>

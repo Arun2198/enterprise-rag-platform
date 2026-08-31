@@ -17,6 +17,7 @@ from rag.embeddings.hashing_embedder import HashingEmbedder
 from rag.generation.base import Answerer
 from rag.generation.citations import extract_citations
 from rag.generation.extractive_answerer import ExtractiveAnswerer
+from rag.generation.prompt import ConversationTurn
 from rag.guardrails.base import Action
 from rag.guardrails.manager import GuardrailManager
 from rag.retrieval.hybrid_retrieval import HybridRetriever
@@ -208,7 +209,8 @@ class RAGService:
         query: str,
         top_k: int = 5,
         client_id: str | None = None,
-        access_groups: list[str] | None = None
+        access_groups: list[str] | None = None,
+        history: list[ConversationTurn] | None = None
     ) -> AskResponse:
         input_result = self.guardrail_manager.run_input(query)
 
@@ -229,7 +231,8 @@ class RAGService:
         )
         answer = self.answerer.answer(
             query=query,
-            retrieved_chunks=retrieved
+            retrieved_chunks=retrieved,
+            history=history
         )
 
         output_result = self.guardrail_manager.run_output(
@@ -296,7 +299,8 @@ class RAGService:
         query: str,
         top_k: int = 5,
         client_id: str | None = None,
-        access_groups: list[str] | None = None
+        access_groups: list[str] | None = None,
+        history: list[ConversationTurn] | None = None
     ) -> tuple[AskResponse, RetrievalTrace]:
         """
         Same behavior as ask(), plus a full per-stage RetrievalTrace
@@ -331,7 +335,8 @@ class RAGService:
         generation_started = time.monotonic()
         answer = self.answerer.answer(
             query=query,
-            retrieved_chunks=retrieved
+            retrieved_chunks=retrieved,
+            history=history
         )
         trace.stage_timings_ms["generation"] = (time.monotonic() - generation_started) * 1000
         trace.generation_provider = type(self.answerer).__name__

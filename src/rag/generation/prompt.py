@@ -1,4 +1,21 @@
+from dataclasses import dataclass
+
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
+
+
+@dataclass(frozen=True)
+class ConversationTurn:
+    """
+    One prior turn in a multi-turn chat, threaded through
+    build_grounded_prompt() so a follow-up question ("what about part-
+    time employees?") can be resolved against what was actually asked
+    and answered before - not fabricated context, and not the same
+    trust category as retrieved document text (see build_grounded_prompt
+    below). role is "user" or "assistant".
+    """
+    role: str
+    content: str
+
 
 SYSTEM_FRAMING = (
     "You are answering a question using retrieved reference material. "
@@ -22,7 +39,8 @@ SYSTEM_FRAMING = (
 
 def build_grounded_prompt(
     query: str,
-    retrieved_chunks: list[RetrievedChunk]
+    retrieved_chunks: list[RetrievedChunk],
+    history: list[ConversationTurn] | None = None
 ) -> str:
     """
     Shared grounded-answer prompt used by every LLM-backed Answerer, so all
@@ -33,14 +51,33 @@ def build_grounded_prompt(
     detection-based backstop on the output side, and this project's own
     docs for the explicit statement that prompt injection is not fully
     solved by either layer alone.
+
+    history (optional) is prior turns in the *same authenticated user's*
+    own conversation, appended by the server after each real answer -
+    never client-supplied "assistant" content (see ConversationStore /
+    the /ask route). That's a different trust category from retrieved
+    document text: it's trusted context for resolving follow-ups, not
+    untrusted evidence to defend against, so it gets its own labeled
+    section rather than being folded into Context.
     """
     context = "\n\n".join(
         f"Source {index + 1} ({item.chunk.chunk_id}):\n{item.chunk.text}"
         for index, item in enumerate(retrieved_chunks)
     )
 
+    history_block = ""
+
+    if history:
+        rendered_turns = "\n".join(f"{turn.role.capitalize()}: {turn.content}" for turn in history)
+        history_block = (
+            "Conversation so far (your own prior exchange with this user - use it to "
+            "resolve follow-up questions, it is not evidence to cite):\n"
+            f"{rendered_turns}\n\n"
+        )
+
     return (
         f"{SYSTEM_FRAMING}\n\n"
+        f"{history_block}"
         f"Context:\n{context}\n\n"
         f"Question: {query}\n\n"
         "Answer:"

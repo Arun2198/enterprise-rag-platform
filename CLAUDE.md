@@ -636,6 +636,69 @@ when configured), `GET /documents/jobs/{job_id}` (`QUERY`), `DELETE /documents/{
 plus async ingestion were live-verified end to end against real S3/SQS/OpenSearch this session
 (see the Ingestion section above).
 
+**Conversation memory** (`app/conversation_store.py`, `CONVERSATIONS_S3_PREFIX` default
+`conversations/`) - multi-turn chat, backend-persisted and scoped per authenticated user, same
+"S3 instead of a new database" pattern as `IngestionJobStore`/`S3DocumentStore`/`S3BackupTarget`:
+`ConversationStore` writes one JSON object per conversation to
+`conversations/{user_id}/{conversation_id}.json`. `user_id` is the validated token's own `sub`
+claim (`AuthenticatedUser.subject`), never a client-supplied value, and it's part of the S3 key
+itself - ownership is enforced structurally (a caller cannot address another user's conversation
+by guessing/passing its id, since the lookup key requires their own subject too), not via a
+separate app-level ACL check that could be forgotten on some code path.
+`build_conversation_store()` (`service_factory.py`) returns `None` when `S3_BUCKET` is unset,
+exactly the same opt-in pattern as async ingestion and durable backups - without S3 configured,
+`/ask` still works, just single-turn/stateless, and every `/conversations*` route 503s with a
+message naming the missing config rather than 500ing.
+
+`ConversationTurn` (`rag/generation/prompt.py`) is a small `role`/`content` dataclass threaded
+through the whole generation stack as an optional trailing parameter: `Answerer.answer()`,
+`build_grounded_prompt()`, `RAGService.ask()`/`ask_with_trace()`. It's deliberately a different
+trust category from `retrieved_chunks` - `build_grounded_prompt()` renders history in its own
+block, explicitly labeled as the model's own prior exchange with this user ("not evidence to
+cite"), separate from the `Context:` block that carries the actual trust-boundary warnings
+(`SYSTEM_FRAMING`) against treating retrieved document text as instructions. History is trusted
+because the server is the only writer of it - see below. `ExtractiveAnswerer` accepts and ignores
+`history` (there's no LLM call to give it to); `FallbackAnswerer` passes it through to both
+wrapped answerers; `BedrockAnswerer`/`OpenAICompatibleAnswerer` thread it into
+`build_grounded_prompt()`. Every existing caller that never passes `history` (all of `main.py`
+before this feature, `evaluation/benchmark.py`) is unaffected - `history=None` renders an empty
+history block, byte-identical prompt to before this existed
+(`test_prompt_with_no_history_is_unchanged_from_before_history_existed`).
+
+**Wiring** (`main.py`): `POST /ask` optionally takes `conversation_id`. When set,
+the route loads that conversation via `conversation_store.get_conversation(conversation_id,
+user.subject)` (404 if missing or not owned by this user), converts its stored turns into
+`ConversationTurn`s, and passes them as `history` into `rag_service.ask()`. After a successful
+answer, the server - never the client - appends the real `(user, query)` and `(assistant,
+answer)` pair to the conversation via `append_turns()`; there is no API surface that lets a
+caller write arbitrary "assistant" text into a conversation's stored history. `AskResponse
+.conversation_id` echoes back which conversation the turn was saved to. Four new routes, all
+gated on `Permission.QUERY` (same permission as `/ask` itself - conversations are a query-history
+convenience, not a separate privilege): `POST /conversations` (body: `title`? - creates an empty
+conversation and returns its id; the frontend calls this lazily on the first message of a new
+chat, not eagerly on "New chat", so an abandoned empty chat never becomes a stored object),
+`GET /conversations` (lists the caller's own conversations, most-recently-updated first),
+`GET /conversations/{conversation_id}` (full turn history), `DELETE /conversations/{conversation_id}`
+(structurally a no-op on an id that doesn't exist or isn't this user's, same as S3's own
+`delete_object`). Live-verified via `tests/unit/test_api.py`'s full-round-trip test (create ->
+ask with conversation_id -> history persisted and threaded into the next prompt -> list -> delete
+-> 404 after) using a real `RAGService`/`ConversationStore` pair against a fake in-memory S3
+client, plus a dedicated ownership test confirming one user's conversation 404s under another
+user's subject.
+
+**Frontend** (`frontend/index.html`) - the single-question/single-answer Ask panel was replaced
+with a real chat UI: a sidebar listing the signed-in user's conversations (`+ New chat`, click to
+switch, per-item delete) next to a scrollable message thread with a chat-style input row
+(Enter to send, Shift+Enter for a newline). Sending a message lazily creates a conversation on
+first send (`ensureActiveConversation()`) rather than the sidebar button itself, ties every
+subsequent message in that chat to the same `conversation_id`, and keeps working as a stateless
+single-turn Q&A (silently, no error shown) when the deployment has no `S3_BUCKET` configured and
+`/conversations` 503s - same fail-open-to-existing-behavior philosophy as the backend. Guardrail
+badges and retrieved sources render under the specific assistant bubble they belong to; turns
+reloaded from `GET /conversations/{id}` only ever carry role/content (that's all
+`ConversationStore` persists), so historical messages show as plain text with no badges - expected,
+not a bug.
+
 **API hardening** (`app/rate_limiter.py`, `main.py`'s upload streaming) - two real gaps closed
 together since both sit on the unauthenticated-by-default surface (`AUTH_ENABLED` defaults to
 `false`). First: `POST /documents` used to read the *entire* upload into memory

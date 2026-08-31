@@ -1,6 +1,7 @@
 from app.aws_client_factory import build_boto3_client
 from app.config import Settings
 from app.config import load_settings
+from app.conversation_store import ConversationStore
 from app.services.rag_service import RERANKER_FLAG_NAME
 from app.services.rag_service import RAGService
 from ingestion.s3_document_store import S3DocumentStore
@@ -441,6 +442,26 @@ def build_ingestion_job_store(
         client=client,
         bucket_name=settings.s3_bucket,
         prefix=settings.s3_jobs_prefix
+    )
+
+
+def build_conversation_store(
+    settings: Settings
+) -> ConversationStore | None:
+    """
+    Returns None when S3_BUCKET isn't set - same opt-in pattern as async
+    ingestion and durable backups. Chat memory only works when there's
+    somewhere durable to put it; without S3_BUCKET the /ask route just
+    falls back to stateless single-turn behavior (see main.py).
+    """
+    if not settings.s3_bucket:
+        return None
+
+    client = build_boto3_client("s3", region_name=settings.aws_region)
+    return ConversationStore(
+        client=client,
+        bucket_name=settings.s3_bucket,
+        prefix=settings.conversations_s3_prefix
     )
 
 

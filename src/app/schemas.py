@@ -48,6 +48,15 @@ class AskRequest(BaseModel):
         default=None,
         description="Stable per-caller id used to bucket feature-flag canary rollouts consistently"
     )
+    conversation_id: str | None = Field(
+        default=None,
+        description=(
+            "Existing conversation to continue - when set, prior turns from this "
+            "conversation are threaded into the prompt as history and the new "
+            "query/answer pair is appended to it. Omit to ask a one-off question "
+            "with no history."
+        )
+    )
 
 
 class Source(BaseModel):
@@ -88,6 +97,7 @@ class AskResponse(BaseModel):
     # a specific source. See rag.generation.citations.extract_citations.
     citations: list[CitationResponse] = Field(default_factory=list)
     guardrail_flags: dict[str, Any] = Field(default_factory=dict)
+    conversation_id: str | None = None
 
 
 class CandidateTraceResponse(BaseModel):
@@ -154,3 +164,29 @@ class BackupRestoreRequest(BaseModel):
 class BackupRestoreResponse(BaseModel):
     snapshot_id: str
     components: list[str]
+
+
+class ConversationCreateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+
+
+class ConversationSummaryResponse(BaseModel):
+    conversation_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    turn_count: int
+
+
+class ConversationTurnResponse(BaseModel):
+    role: str
+    content: str
+    created_at: str
+
+
+class ConversationDetailResponse(BaseModel):
+    conversation_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    turns: list[ConversationTurnResponse]
