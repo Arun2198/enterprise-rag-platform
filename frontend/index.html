@@ -249,6 +249,11 @@
   let activeConversationId = null;
   let messages = [];
   let conversations = [];
+  // Guards sendMessage() against concurrent invocation - the Enter-key
+  // handler and the Send button's click handler both call it directly,
+  // and disabling the button alone doesn't stop a second Enter press
+  // from firing while the first request is still in flight.
+  let isSending = false;
 
   const $ = (id) => document.getElementById(id);
 
@@ -555,8 +560,9 @@
   async function sendMessage() {
     const query = $("query").value.trim();
 
-    if (!query) return;
+    if (!query || isSending) return;
 
+    isSending = true;
     setStatus($("chat-status"), "", "");
     $("ask-btn").disabled = true;
     $("query").value = "";
@@ -600,6 +606,7 @@
       renderThread();
       setStatus($("chat-status"), err.message, "err");
     } finally {
+      isSending = false;
       $("ask-btn").disabled = false;
     }
   }

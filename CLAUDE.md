@@ -361,6 +361,23 @@ providers means passing a different instance into `RAGService.__init__`.
    conflating the two was a real bug fixed this session, since a perfect retrieval match can still
    pair with a fabricated answer.
 
+   **`HallucinationDetector` scores against the best-matching chunk, not the whole retrieved
+   context concatenated** - a real dilution bug, found live against the deployed app while
+   testing the chat feature above. It used to score the answer against every retrieved chunk
+   pasted together; a larger `top_k` pulling in more tangential chunks could drag a genuinely
+   grounded answer's score down even when nothing about the answer's correctness changed. Same
+   query, same document, same correct fact ("Full-time employees accrue 22 days of paid vacation
+   leave per calendar year") scored 0.91 groundedness at `top_k=3` and 0.58 at `top_k=8` purely
+   from denominator/embedding dilution across the wider concatenated context - the answer was
+   fully grounded in one chunk both times, but only the smaller `top_k` case let it through.
+   Fixed by taking the max groundedness score across each individual retrieved chunk instead of
+   one score against everything concatenated - the answer only needs to be grounded in *some* of
+   what was retrieved, not diluted by however much unrelated material the reranker happened to
+   also return. `evaluation/generation_metrics.py::GroundednessMetric` is a separate, intentionally
+   independent implementation (see the Evaluation framework section) and was not touched by this
+   fix - re-check it for the same dilution pattern if it's ever pulled into anything using a large
+   `top_k`.
+
    **Retrieval-relevance guard** (`rag/guardrails/retrieval_relevance_guard.py`,
    `RETRIEVAL_RELEVANCE_GUARD_ENABLED` - default `false`, `RETRIEVAL_RELEVANCE_THRESHOLD` optional
    override) - fixes a real, verified gap that groundedness alone can't catch: it measures whether
@@ -684,7 +701,22 @@ chat, not eagerly on "New chat", so an abandoned empty chat never becomes a stor
 ask with conversation_id -> history persisted and threaded into the next prompt -> list -> delete
 -> 404 after) using a real `RAGService`/`ConversationStore` pair against a fake in-memory S3
 client, plus a dedicated ownership test confirming one user's conversation 404s under another
-user's subject.
+user's subject. Also live-verified end to end against the real deployed app (create -> two
+threaded turns -> list -> delete -> 404), Cognito-authenticated.
+
+**Known gap, found during live verification**: history is only threaded into the *generation*
+prompt, not into retrieval - `_retrieve()` still embeds/BM25-searches the raw current-turn query
+text alone. A coreference-dependent follow-up ("Who published it?" after "What is the AI RMF?")
+retrieves against "who published it" verbatim, which doesn't share vocabulary or embedding
+similarity with the actual answer and can retrieve irrelevant chunks - confirmed live, this
+specific follow-up scored groundedness 0.50 / retrieval_relevance 0.18 and correctly abstained
+rather than hallucinating (`RetrievalRelevanceGuard` + `HallucinationDetector` did their job as
+designed), but a better answer was available in the corpus and never got retrieved because the
+query going into search never resolved "it". The honest fix is query rewriting/condensation
+(rephrase the follow-up into a standalone query using history before it hits `_retrieve()`) -
+not implemented here; treat multi-turn *retrieval* quality as unproven beyond what the guardrails
+already catch, even though multi-turn *generation* (the LLM actually seeing prior turns) works
+correctly.
 
 **Frontend** (`frontend/index.html`) - the single-question/single-answer Ask panel was replaced
 with a real chat UI: a sidebar listing the signed-in user's conversations (`+ New chat`, click to
