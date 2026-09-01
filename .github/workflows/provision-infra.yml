@@ -1,0 +1,102 @@
+name: Provision AWS infrastructure
+
+# The one part of this repo's deployment that terraform apply never ran
+# from CI before this - deploy-aws.yml can only redeploy onto
+# infrastructure that already exists (build+push an image, force a new
+# ECS deployment); it has no way to create the ECR repo, ECS cluster,
+# ALB, OpenSearch domain, S3 buckets, SQS queues, or Secrets Manager
+# entries in the first place. Confirmed live: after a full teardown,
+# deploy-aws.yml failed at "Build, tag, and push image" with "The
+# repository with name 'enterprise-rag-platform' does not exist" -
+# credentials were never the problem, the infrastructure just didn't
+# exist and nothing in CI could create it.
+#
+# Deliberately workflow_dispatch only, never push-triggered - an infra
+# change (especially `destroy`) is a materially different risk than
+# redeploying the app, and shouldn't happen as a side effect of a push.
+# This is the automated equivalent of a human running `terraform apply`
+# from their laptop, not a relaxation of that safety stance - it's still
+# a deliberate, explicitly-triggered action, just triggerable from
+# GitHub instead of requiring local Terraform/AWS CLI access.
+#
+# Requires terraform/versions.tf's S3+DynamoDB remote state backend
+# (see scripts/bootstrap_terraform_state.md) - a GitHub Actions runner is
+# ephemeral and has no local state to persist between runs, so this
+# would be unsafe without it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "plan (safe, read-only) / apply (create or update real AWS resources) / destroy (tear everything down)"
+        required: true
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+jobs:
+  terraform:
+    name: terraform ${{ inputs.action }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions-ecs-deploy-role
+          role-session-name: GitHubActionsTerraform
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform plan
+        if: inputs.action != 'destroy'
+        working-directory: terraform
+        env:
+          TF_VAR_jina_api_key: ${{ secrets.JINA_API }}
+          TF_VAR_llm_api_key: ${{ secrets.NVIDIA_API }}
+          # A real, well-formed ECR URI even before any image has ever
+          # been pushed - the empty-string default is rejected outright
+          # at task definition registration, but a syntactically valid
+          # reference to an image that doesn't exist yet registers fine
+          # (ECS only tries to actually pull it when launching a task,
+          # which is a separate, later failure mode - not something
+          # `terraform apply` waits on or fails over, since this module
+          # doesn't set wait_for_steady_state on the ECS service). On a
+          # from-scratch provision, expect the first task(s) to fail
+          # until deploy-aws.yml pushes a real image right after - that's
+          # expected bootstrap behavior, not a plan/apply failure.
+          TF_VAR_container_image: "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
+        run: terraform plan -out=tfplan -input=false
+
+      - name: Terraform plan (destroy preview)
+        if: inputs.action == 'destroy'
+        working-directory: terraform
+        env:
+          TF_VAR_jina_api_key: ${{ secrets.JINA_API }}
+          TF_VAR_llm_api_key: ${{ secrets.NVIDIA_API }}
+          TF_VAR_container_image: "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
+        run: terraform plan -destroy -out=tfplan -input=false
+
+      - name: Terraform apply
+        if: inputs.action == 'apply' || inputs.action == 'destroy'
+        working-directory: terraform
+        run: terraform apply -input=false tfplan
