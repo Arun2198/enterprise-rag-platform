@@ -233,3 +233,55 @@ jobs:
             echo "::error::/health returned $status after deploy (alb_url=$alb_url)"
             exit 1
           fi
+
+      - name: Ensure the sample document is ingested
+        # Idempotent, not blind re-ingestion on every push: the app has
+        # no content-based dedup (a known gap - see CLAUDE.md's
+        # "Duplicate document problem"), so calling /ingest unconditionally
+        # on every deploy would create a fresh duplicate copy of the same
+        # document every single time. Checks first via a real /ask query
+        # that only returns sources when the AI-RMF PDF is actually
+        # indexed, and only calls /ingest when that comes back empty -
+        # true on a fresh/just-reprovisioned environment, a no-op
+        # (skipped) on every routine code-only redeploy after that.
+        run: |
+          alb_url="${{ steps.discover-alb.outputs.alb_url }}"
+
+          # Plain unsigned HTTPS to Cognito's own public InitiateAuth API -
+          # same approach frontend/index.html already uses (no AWS
+          # credentials needed for a public app client with no secret).
+          # Deliberately not `aws cognito-idp initiate-auth`: that goes
+          # through SigV4 and IAM authorization since it's a signed CLI
+          # call, needing a permission grant this role has no other
+          # reason to carry.
+          token=$(curl -s "https://cognito-idp.${{ env.AWS_REGION }}.amazonaws.com/" \
+            -H "Content-Type: application/x-amz-json-1.1" \
+            -H "X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth" \
+            -d "{\"AuthFlow\":\"USER_PASSWORD_AUTH\",\"ClientId\":\"${{ vars.OIDC_AUDIENCE }}\",\"AuthParameters\":{\"USERNAME\":\"${{ secrets.COGNITO_TEST_USERNAME }}\",\"PASSWORD\":\"${{ secrets.COGNITO_TEST_PASSWORD }}\"}}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['AuthenticationResult']['IdToken'])")
+
+          source_count=$(curl -s -X POST "$alb_url/ask" \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"What is the AI RMF?","top_k":1}' \
+            | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('sources', [])))")
+
+          echo "existing sources for a known AI-RMF query: $source_count"
+
+          if [ "$source_count" != "0" ]; then
+            echo "sample document already indexed, skipping ingestion"
+            exit 0
+          fi
+
+          echo "no existing content found - ingesting the sample document"
+          ingest_response=$(curl -s -X POST "$alb_url/ingest" \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -d '{"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"]}')
+          echo "$ingest_response"
+
+          indexed_chunks=$(echo "$ingest_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('indexed_chunks', 0))")
+          if [ "$indexed_chunks" = "0" ]; then
+            echo "::error::ingestion reported 0 indexed chunks"
+            exit 1
+          fi
