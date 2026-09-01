@@ -96,6 +96,10 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      # Needed only for the ALB_URL variable update below (gh variable
+      # set calls the same REST API as repo Settings > Variables) -
+      # nothing else in this job writes anything to the repo itself.
+      actions: write
 
     steps:
       - name: Checkout
@@ -131,6 +135,37 @@ jobs:
             --service "${{ env.ECS_SERVICE }}" \
             --force-new-deployment \
             --region "${{ env.AWS_REGION }}"
+
+      - name: Discover current ALB URL and update the ALB_URL variable
+        id: discover-alb
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The single place this repo's real ALB URL gets discovered and
+        # written down - every other step/workflow that needs it reads
+        # the ALB_URL repo variable this sets, never re-derives its own
+        # copy. Found necessary live: the ALB's auto-generated DNS
+        # hostname changes its random suffix any time the load balancer
+        # is recreated (a full infra teardown+reprovision), which
+        # silently turned ALB_URL into a stale, dead URL - a real,
+        # previously-hardcoded value nothing kept in sync. Runs on every
+        # push-triggered deploy, so ALB_URL can never drift for more than
+        # one deployment cycle even if the ALB is ever recreated again.
+        run: |
+          alb_dns=$(aws elbv2 describe-load-balancers \
+            --region "${{ env.AWS_REGION }}" \
+            --names "${{ env.ECR_REPOSITORY }}-alb" \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
+          alb_url="http://$alb_dns"
+          echo "resolved ALB URL: $alb_url"
+          echo "alb_url=$alb_url" >> "$GITHUB_OUTPUT"
+
+          if [ "$alb_url" != "${{ vars.ALB_URL }}" ]; then
+            echo "ALB_URL changed (was '${{ vars.ALB_URL }}') - updating the repo variable"
+            gh variable set ALB_URL --body "$alb_url"
+          else
+            echo "ALB_URL unchanged"
+          fi
 
       - name: Wait for the service to stabilize
         # `aws ecs wait services-stable`'s fixed budget is 15s x 40
@@ -175,16 +210,24 @@ jobs:
           done
 
       - name: Deploy frontend to S3
+        # frontend/index.html carries __API_BASE_URL__ as a placeholder,
+        # never a real hardcoded URL - substituted here from the same
+        # single discovery in the step above, so the deployed frontend
+        # always points at whatever ALB actually exists right now rather
+        # than whatever happened to be committed at some point in the past.
         run: |
-          aws s3 cp frontend/index.html \
+          sed "s|__API_BASE_URL__|${{ steps.discover-alb.outputs.alb_url }}|g" \
+            frontend/index.html > /tmp/index.html
+          aws s3 cp /tmp/index.html \
             "s3://${{ vars.FRONTEND_S3_BUCKET }}/index.html" \
             --region "${{ env.AWS_REGION }}"
 
       - name: Verify /health after deploy
         run: |
-          status=$(curl -s -o /dev/null -w "%{http_code}" "${{ vars.ALB_URL }}/health")
+          alb_url="${{ steps.discover-alb.outputs.alb_url }}"
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$alb_url/health")
           echo "health check status: $status"
           if [ "$status" != "200" ]; then
-            echo "::error::/health returned $status after deploy"
+            echo "::error::/health returned $status after deploy (alb_url=$alb_url)"
             exit 1
           fi
