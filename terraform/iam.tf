@@ -222,6 +222,34 @@ resource "aws_iam_role_policy" "github_actions_deploy_extras" {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
         Resource = "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${var.project_name}-tflock"
+      },
+      {
+        # Found missing on the very first CI-run terraform import: this
+        # role manages its own trust policy (aws_iam_role.github_actions_deploy
+        # above, which references data.aws_iam_openid_connect_provider),
+        # a genuine bootstrap wrinkle - it needs to read the OIDC
+        # provider that grants it access in the first place.
+        # ListOpenIDConnectProviders has no per-resource ARN form (it's
+        # an account-wide list operation), so it's the one statement here
+        # that can't be scoped tighter than "*".
+        Sid      = "GithubOidcProviderRead"
+        Effect   = "Allow"
+        Action   = "iam:ListOpenIDConnectProviders"
+        Resource = "*"
+      },
+      {
+        # Deliberately NOT data.aws_iam_openid_connect_provider.github_actions.arn
+        # here - that would make this policy depend on successfully
+        # reading the very data source this permission exists to allow
+        # reading, a real circular dependency that broke the first CI
+        # apply attempt (AccessDenied evaluating the data source before
+        # this policy granting access to it had ever been applied).
+        # Literal ARN instead - GitHub's OIDC provider URL/thumbprint
+        # namespace this hangs off of doesn't change.
+        Sid      = "GithubOidcProviderGet"
+        Effect   = "Allow"
+        Action   = "iam:GetOpenIDConnectProvider"
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
       }
     ]
   })
