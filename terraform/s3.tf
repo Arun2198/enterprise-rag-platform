@@ -3,6 +3,14 @@
 # be request volume at production scale, not storage.
 resource "aws_s3_bucket" "docs" {
   bucket = "${var.project_name}-docs-${data.aws_caller_identity.current.account_id}"
+  # Without this, `terraform destroy` fails outright on a non-empty
+  # bucket - found live during the first full teardown this session
+  # (real ingested documents, job records, mlops backups all in here by
+  # then), worked around by hand-emptying both buckets via `aws s3 rm
+  # --recursive` before destroy could proceed. This makes that
+  # unnecessary going forward - genuinely destructive on `destroy`, which
+  # is exactly what was asked for both times this got hit.
+  force_destroy = true
 
   tags = {
     Project     = var.project_name
@@ -31,6 +39,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "docs" {
 
 resource "aws_s3_bucket" "frontend" {
   bucket = "${var.project_name}-frontend-${data.aws_caller_identity.current.account_id}"
+  # Same reasoning as aws_s3_bucket.docs above.
+  force_destroy = true
 
   tags = {
     Project     = var.project_name

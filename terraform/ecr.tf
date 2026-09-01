@@ -3,6 +3,12 @@
 resource "aws_ecr_repository" "app" {
   name                 = var.project_name
   image_tag_mutability = "MUTABLE"
+  # Without this, `terraform destroy` fails outright on a non-empty repo
+  # (ECR refuses to delete a repository that still has images) - found
+  # live during the first full teardown this session, worked around by
+  # hand-force-deleting the repo via the AWS CLI before destroy could
+  # proceed. This makes that unnecessary going forward.
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true
