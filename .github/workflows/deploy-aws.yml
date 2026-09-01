@@ -96,10 +96,6 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      # Needed only for the ALB_URL variable update below (gh variable
-      # set calls the same REST API as repo Settings > Variables) -
-      # nothing else in this job writes anything to the repo itself.
-      actions: write
 
     steps:
       - name: Checkout
@@ -139,7 +135,13 @@ jobs:
       - name: Discover current ALB URL and update the ALB_URL variable
         id: discover-alb
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The default GITHUB_TOKEN cannot write repo Variables even
+          # with `permissions: actions: write` on the job (confirmed
+          # live: 403 Resource not accessible by integration) - the
+          # Variables API specifically needs a PAT with that permission,
+          # which GITHUB_TOKEN structurally doesn't grant regardless of
+          # the permissions block.
+          GH_TOKEN: ${{ secrets.REPO_VARS_TOKEN }}
         # The single place this repo's real ALB URL gets discovered and
         # written down - every other step/workflow that needs it reads
         # the ALB_URL repo variable this sets, never re-derives its own
