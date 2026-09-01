@@ -111,9 +111,47 @@ jobs:
           TF_VAR_jina_api_key: ${{ secrets.JINA_API }}
           TF_VAR_llm_api_key: ${{ secrets.NVIDIA_API }}
           TF_VAR_container_image: "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
-        run: terraform plan -destroy -out=tfplan -input=false
+        # A plain `terraform plan -destroy` over the whole module now
+        # refuses to plan ANYTHING as soon as it reaches
+        # aws_iam_role.github_actions_deploy or any of its policy
+        # attachments/inline policy - lifecycle.prevent_destroy on those
+        # (see their own comments in terraform/iam.tf) errors the whole
+        # plan, not just that one resource. Terraform 1.9.8 has no
+        # -exclude flag (confirmed - it's not in `plan -help`, and
+        # passing it errors "flag provided but not defined"; that flag
+        # was assumed to exist here and didn't, a real mistake caught
+        # before it shipped). Building an explicit -target list by hand
+        # would work but silently drift stale every time a resource is
+        # added to this module. Instead: compute the destroy target list
+        # from whatever's actually in state right now, minus the
+        # protected deploy-role resources by name pattern - self-updating
+        # as the module grows, and the one thing it can never accidentally
+        # include is the credentials the destroy is running as.
+        run: |
+          targets=$(terraform state list | grep -Ev '^aws_iam_role\.github_actions_deploy$|^aws_iam_role_policy_attachment\.github_actions_|^aws_iam_role_policy\.github_actions_deploy_extras$')
+
+          target_args=()
+          while IFS= read -r addr; do
+            [ -n "$addr" ] && target_args+=("-target=$addr")
+          done <<< "$targets"
+
+          echo "destroying ${#target_args[@]} resource(s), excluding the deploy role and its permissions"
+
+          # Zero -target flags means "target everything" to Terraform, not
+          # "target nothing" - if the filtered list is empty (state
+          # already empty, or only the protected resources remain), that
+          # would silently fall through to an unscoped destroy and hit
+          # the exact prevent_destroy error this step exists to avoid.
+          # Nothing to destroy in that case - skip planning entirely and
+          # tell the apply step (next) not to run.
+          if [ "${#target_args[@]}" -eq 0 ]; then
+            echo "nothing to destroy (state is empty or only holds the protected deploy-role resources)"
+            echo "nothing_to_destroy=true" >> "$GITHUB_ENV"
+          else
+            terraform plan -destroy "${target_args[@]}" -out=tfplan -input=false
+          fi
 
       - name: Terraform apply
-        if: inputs.action == 'apply' || inputs.action == 'destroy'
+        if: (inputs.action == 'apply' || inputs.action == 'destroy') && env.nothing_to_destroy != 'true'
         working-directory: terraform
         run: terraform apply -input=false tfplan
