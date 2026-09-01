@@ -9,3 +9,4 @@ mlops_backups/
 .env
 .env.*
 CLOUD_NATIVE_GAPS.md
+.github/DEPLOYMENT_PREREQUISITES.md

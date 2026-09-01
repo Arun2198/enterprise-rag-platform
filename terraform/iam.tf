@@ -32,6 +32,25 @@
 resource "aws_iam_role" "github_actions_deploy" {
   name = var.existing_github_actions_deploy_role_name
 
+  # A real, serious failure found live: `terraform destroy` runs AS this
+  # role's assumed credentials. Without this, destroy deletes the role
+  # itself partway through its own run, instantly invalidating its own
+  # in-flight session - every subsequent parallel resource-destroy call
+  # in that same apply started failing with a mix of
+  # UnrecognizedClientException/AccessDeniedException/InvalidAccessKeyId
+  # (all symptoms of the exact same underlying cause: the credentials'
+  # issuing role no longer existed), state failed to persist to S3 for
+  # the same reason, and the next CI run couldn't even authenticate
+  # ("Could not assume role with OIDC: Not authorized to perform
+  # sts:AssumeRoleWithWebIdentity") since there was no role left to
+  # assume. Recovery required local, non-role-dependent AWS credentials -
+  # CI had zero path back in on its own. prevent_destroy makes this
+  # structurally impossible to hit again: any plan that would destroy
+  # this resource now errors instead of executing.
+  lifecycle {
+    prevent_destroy = true
+  }
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -71,26 +90,41 @@ resource "aws_iam_role" "github_actions_deploy" {
 resource "aws_iam_role_policy_attachment" "github_actions_ecr" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_ec2" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2FullAccess"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_logs" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_ecs" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_elb" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Added when provision-infra.yml (a real `terraform apply` from CI) first
@@ -100,21 +134,33 @@ resource "aws_iam_role_policy_attachment" "github_actions_elb" {
 resource "aws_iam_role_policy_attachment" "github_actions_s3" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_sqs" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSQSFullAccess"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_secrets" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_opensearch" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonOpenSearchServiceFullAccess"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Same inline policy name ("ecs-deploy-extras") the role already carried -
@@ -133,6 +179,10 @@ resource "aws_iam_role_policy_attachment" "github_actions_opensearch" {
 resource "aws_iam_role_policy" "github_actions_deploy_extras" {
   name = "ecs-deploy-extras"
   role = aws_iam_role.github_actions_deploy.name
+
+  lifecycle {
+    prevent_destroy = true
+  }
 
   policy = jsonencode({
     Version = "2012-10-17"
