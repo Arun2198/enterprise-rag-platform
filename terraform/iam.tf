@@ -163,6 +163,14 @@ resource "aws_iam_role_policy" "github_actions_deploy_extras" {
         ]
       },
       {
+        # Includes its own ARN, not just the roles it manages elsewhere -
+        # found missing on the second CI-run import attempt: reading and
+        # updating itself (GetRole to refresh state, UpdateAssumeRolePolicy
+        # for its own trust policy, AttachRolePolicy/DetachRolePolicy for
+        # its own managed-policy attachments) needs the exact same
+        # permissions as managing any other role, and a role doesn't
+        # implicitly have any of these on itself - IAM requires an
+        # explicit grant even for self-management.
         Sid    = "TerraformManagedIamRoles"
         Effect = "Allow"
         Action = [
@@ -170,17 +178,22 @@ resource "aws_iam_role_policy" "github_actions_deploy_extras" {
           "iam:CreateRole",
           "iam:DeleteRole",
           "iam:TagRole",
+          "iam:UntagRole",
+          "iam:UpdateAssumeRolePolicy",
           "iam:PutRolePolicy",
           "iam:GetRolePolicy",
           "iam:DeleteRolePolicy",
           "iam:ListRolePolicies",
           "iam:ListAttachedRolePolicies",
-          "iam:ListInstanceProfilesForRole"
+          "iam:ListInstanceProfilesForRole",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy"
         ]
         Resource = [
           data.aws_iam_role.task_role.arn,
           data.aws_iam_role.task_execution_role.arn,
-          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-scheduler-invocation-role"
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-scheduler-invocation-role",
+          aws_iam_role.github_actions_deploy.arn
         ]
       },
       {
