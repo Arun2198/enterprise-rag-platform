@@ -138,13 +138,19 @@ resource "aws_iam_role_policy" "github_actions_deploy_extras" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Missing the scheduler-invocation role until this was found live:
+        # aws_scheduler_schedule needs iam:PassRole on the role it hands
+        # to EventBridge Scheduler (scheduler_invocation below), same as
+        # ECS needs it for the task/execution roles - a from-scratch
+        # apply failed creating both schedules over this.
         Sid    = "PassEcsRoles"
         Effect = "Allow"
         Action = "iam:PassRole"
         Resource = [
           data.aws_iam_role.task_execution_role.arn,
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/ecsInfrastructureRoleForExpressServices",
-          data.aws_iam_role.task_role.arn
+          data.aws_iam_role.task_role.arn,
+          aws_iam_role.scheduler_invocation.arn
         ]
       },
       {
@@ -267,6 +273,7 @@ resource "aws_iam_role_policy" "github_actions_deploy_extras" {
     ]
   })
 }
+
 
 resource "aws_iam_role_policy" "task_role_live_backends" {
   name = "${var.project_name}-task-role-live-backends"

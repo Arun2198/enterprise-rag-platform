@@ -8,6 +8,17 @@ resource "aws_secretsmanager_secret" "llm_api_key" {
   name        = "${var.project_name}/llm-api-key"
   description = "API key for the openai_compatible fallback generation provider."
 
+  # Defaults to a 30-day recovery window otherwise - found live: a
+  # `terraform destroy` (full teardown) leaves the secret merely
+  # scheduled for deletion, not actually gone, and AWS refuses to create
+  # a new secret with the same name while the old one is still in that
+  # window ("already scheduled for deletion"), so the very next
+  # `terraform apply` fails outright. 0 means destroy actually destroys -
+  # matches this project's own "tear down means tear down" expectation
+  # from the manual teardown this session, codified so it doesn't have to
+  # be manually force-deleted via the AWS CLI again next time.
+  recovery_window_in_days = 0
+
   tags = {
     Project     = var.project_name
     Environment = var.environment
@@ -50,6 +61,11 @@ resource "aws_secretsmanager_secret" "jina_api_key" {
 
   name        = "${var.project_name}/jina-api-key"
   description = "API key for Jina embedding + reranking (the AWS deployment's default providers)."
+
+  # See llm_api_key's identical setting above for why - same real
+  # "already scheduled for deletion" failure on the very next apply
+  # after a full teardown, hit live by both secrets in this module.
+  recovery_window_in_days = 0
 
   tags = {
     Project     = var.project_name
