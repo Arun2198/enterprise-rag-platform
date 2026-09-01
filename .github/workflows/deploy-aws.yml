@@ -18,11 +18,35 @@ name: Deploy to AWS
 # redeploying the application/frontend, and isn't something this
 # workflow should decide on its own.
 
+# Scoped to paths that actually affect the deployed app (what the
+# Dockerfile COPYs in, plus the app's own tests and this workflow file) -
+# a docs-only or terraform-only commit used to trigger a full
+# rebuild+redeploy of unchanged app code for nothing. terraform/**
+# deliberately stays out of this list; infra changes go through
+# provision-infra.yml instead (see that workflow's own header comment).
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "sample_documents/**"
+      - "frontend/**"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/deploy-aws.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "sample_documents/**"
+      - "frontend/**"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/deploy-aws.yml"
   workflow_dispatch: {}
 
 env:
