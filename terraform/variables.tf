@@ -202,6 +202,28 @@ variable "existing_task_execution_role_name" {
   default = "ecsTaskExecutionRole"
 }
 
+# Unlike the two roles above, this one has no other consumer to avoid
+# disturbing - it exists for exactly one purpose (deploy-aws.yml assuming
+# it via GitHub OIDC), so it's brought fully under Terraform management
+# below (iam.tf) rather than left as a read-only reference: its trust
+# policy, managed-policy attachments, and inline policy are all real
+# resources here now. It was originally bootstrapped by hand (before this
+# module existed) and adopted via `terraform import`, not recreated -
+# recreating it would rotate nothing meaningful (no secret material,
+# unlike Cognito/the task roles) but there's no reason to when import is
+# just as safe and cheaper to verify.
+variable "existing_github_actions_deploy_role_name" {
+  description = "Existing IAM role deploy-aws.yml assumes via GitHub OIDC - imported into Terraform state, not created fresh, so this apply adopts management of it rather than replacing it."
+  type        = string
+  default     = "github-actions-ecs-deploy-role"
+}
+
+variable "github_repository" {
+  description = "owner/repo this role's trust policy scopes sts:AssumeRoleWithWebIdentity to (the token.actions.githubusercontent.com:sub condition) - must match exactly or every GitHub Actions run loses AWS access."
+  type        = string
+  default     = "Arun2198/enterprise-rag-platform"
+}
+
 variable "existing_cognito_user_pool_id" {
   description = "Existing Cognito User Pool ID, reused (not recreated) so this module never invalidates already-configured OIDC_* values elsewhere. Defaults to this project's real pool so `apply` wires real authentication with no manual step. Blank disables authentication entirely (AUTH_ENABLED stays at the app's own default of false) - this module does not create a fresh pool; that's a real, separate decision (a new pool means new users, new app client, every existing OIDC_* config elsewhere goes stale) that shouldn't happen as a side effect of an empty string."
   type        = string

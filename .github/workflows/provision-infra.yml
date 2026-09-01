@@ -28,10 +28,10 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "plan (safe, read-only) / apply (create or update real AWS resources) / destroy (tear everything down)"
+        description: "plan (safe, read-only) / apply (create or update real AWS resources) / destroy (tear everything down) / import (adopt the pre-existing github-actions-ecs-deploy-role into state without recreating it - run once before the first apply that manages it)"
         required: true
         type: choice
-        options: [plan, apply, destroy]
+        options: [plan, apply, destroy, import]
         default: plan
 
 env:
@@ -67,8 +67,25 @@ jobs:
         working-directory: terraform
         run: terraform init
 
+      - name: Terraform import (github_actions_deploy role)
+        if: inputs.action == 'import'
+        working-directory: terraform
+        env:
+          TF_VAR_jina_api_key: ${{ secrets.JINA_API }}
+          TF_VAR_llm_api_key: ${{ secrets.NVIDIA_API }}
+          TF_VAR_container_image: "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
+        # Only aws_iam_role itself needs a real import - CreateRole fails
+        # outright on a name that already exists (unlike the policy
+        # attachments/inline policy below it, which are idempotent AWS
+        # calls that adopt cleanly on a plain apply even without being
+        # imported first). `|| true` on each: safe to re-run this action
+        # even after the role's already been imported once, since a
+        # duplicate import errors ("resource already managed") rather
+        # than silently no-op-ing.
+        run: terraform import aws_iam_role.github_actions_deploy github-actions-ecs-deploy-role || true
+
       - name: Terraform plan
-        if: inputs.action != 'destroy'
+        if: inputs.action != 'destroy' && inputs.action != 'import'
         working-directory: terraform
         env:
           TF_VAR_jina_api_key: ${{ secrets.JINA_API }}

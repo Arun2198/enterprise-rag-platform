@@ -32,3 +32,11 @@ data "aws_cognito_user_pool" "existing" {
   count        = var.existing_cognito_user_pool_id != "" ? 1 : 0
   user_pool_id = var.existing_cognito_user_pool_id
 }
+
+# The GitHub OIDC provider itself - referenced, not created. It's account-
+# wide federation infrastructure that could plausibly back roles for
+# other repos/workflows beyond this one; this module owns the deploy
+# role that trusts it, not the provider itself.
+data "aws_iam_openid_connect_provider" "github_actions" {
+  url = "https://token.actions.githubusercontent.com"
+}
