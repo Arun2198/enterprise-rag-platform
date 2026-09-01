@@ -8,3 +8,4 @@ evaluation/reports/*.csv
 mlops_backups/
 .env
 .env.*
+CLOUD_NATIVE_GAPS.md
