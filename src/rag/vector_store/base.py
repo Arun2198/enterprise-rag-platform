@@ -35,6 +35,12 @@ class VectorStore(Protocol):
     ) -> list[SearchResult]:
         ...
 
+    def get_embedding(
+        self,
+        chunk_id: str
+    ) -> list[float] | None:
+        ...
+
     def delete(
         self,
         chunk_id: str

@@ -26,8 +26,14 @@ class IncrementalIndexResult:
     Everything Phase 16's structured-logging requirement asks for, plus
     what the API response needs. `indexed_chunk_count` is the document's
     total live chunk count after this run (matches the old index_document
-    return value's meaning) - changed_chunks/unchanged_chunks/deleted_chunks
-    are the new, finer-grained breakdown of how that total was reached.
+    return value's meaning) - changed_chunks/unchanged_chunks/
+    reused_chunks/deleted_chunks are the finer-grained breakdown of how
+    that total was reached. `changed_chunks` is specifically the count
+    that triggered a real embedding-model call; `reused_chunks` is
+    content that moved position on the page (an edit elsewhere shifted
+    it) but whose text - and therefore embedding - didn't actually
+    change, so its existing embedding was copied forward instead of
+    recomputed.
     """
     document_id: str
     previous_version: int | None
@@ -39,6 +45,7 @@ class IncrementalIndexResult:
     total_chunks: int
     changed_chunks: int
     unchanged_chunks: int
+    reused_chunks: int
     deleted_chunks: int
     embedding_calls: int
     embedding_skipped_count: int
@@ -78,21 +85,38 @@ class IncrementalIndexer:
     Diffs a freshly-parsed Document against its stored DocumentManifest
     (if any) and touches only the pages/chunks that actually changed:
     unchanged chunks are never re-embedded and never re-written to the
-    vector store, changed/new chunks are embedded and upserted, and
-    chunks that no longer exist (a page or the whole tail of a document
-    was removed) are deleted. See CLAUDE.md's incremental-re-embedding
+    vector store, changed/new chunks are embedded and upserted, chunks
+    whose content merely moved to a different position on the page (an
+    edit elsewhere shifted the sentence-packing boundaries) get their
+    existing embedding copied forward instead of recomputed, and chunks
+    that no longer exist (a page or the whole tail of a document was
+    removed) are deleted. See CLAUDE.md's incremental-re-embedding
     section for the full design writeup.
 
     Change detection is entirely chunk-hash-driven, not page-hash-driven -
     page hashes are computed and reported for the Phase 16 log summary,
-    but the actual embed/skip decision is a direct content_hash lookup
-    per chunk_id against the previous manifest. This naturally satisfies
-    the finer-grained requirement of "a chunk within a changed page can
-    still be unchanged" without needing separate page-level and
-    chunk-level code paths - it also means a page whose extracted text
-    shifted by pure whitespace (a re-extraction quirk, not a real edit)
-    still skips re-embedding every one of its chunks, since content_hash
-    normalizes whitespace before hashing.
+    but the actual embed/skip decision is a content_hash comparison per
+    chunk. This naturally satisfies the finer-grained requirement of "a
+    chunk within a changed page can still be unchanged" without needing
+    separate page-level and chunk-level code paths - it also means a page
+    whose extracted text shifted by pure whitespace (a re-extraction
+    quirk, not a real edit) still skips re-embedding every one of its
+    chunks, since content_hash normalizes whitespace before hashing.
+
+    Content-addressed reuse (not just position-addressed): chunking is
+    greedy sentence-packing up to chunk_size, so a length-changing edit
+    to one sentence can shift every later chunk's boundaries on that
+    page - the sentences after the edit are unchanged, but they now fall
+    into a differently-positioned chunk with a different chunk_id. A
+    pure "same chunk_id, same hash" comparison would treat all of those
+    as new and re-embed the whole rest of the page. Instead, any new
+    chunk whose exact text (content_hash) matches some *not yet reused*
+    chunk from the previous manifest for the same page - regardless of
+    position - has its embedding fetched back out of the vector store
+    (VectorStore.get_embedding) and copied to the new chunk_id rather
+    than recomputed. Only chunks whose text is genuinely different from
+    anything in the previous version of that page ever trigger a real
+    embedding call.
     """
 
     def __init__(
@@ -130,6 +154,7 @@ class IncrementalIndexer:
         fingerprint = embedding_fingerprint_for(self.embedder)
         chunking_version = self.chunker.chunking_version
         document_hash = compute_document_hash(pages)
+        file_name = document.metadata.get("file_name", document.source)
 
         previous = self.manifest_store.get(document.document_id)
         fingerprint_changed = (
@@ -143,21 +168,54 @@ class IncrementalIndexer:
         previous_pages = {} if previous is None else {p.page_number: p for p in previous.pages}
 
         new_chunk_ids = {c.chunk_id for c in new_chunks}
-        stale_chunk_ids = set(previous_chunks.keys()) - new_chunk_ids
 
+        # Reverse index for content-addressed reuse: hash -> old entries
+        # that still hold that exact content, grouped by page (a chunk
+        # moving to a different *page* isn't something an edit to one
+        # page's text can cause, so this stays page-scoped rather than
+        # matching across the whole document).
+        hash_pool_by_page: dict[int, dict[str, list[ChunkManifestEntry]]] = {}
+        for chunk_id, entry in previous_chunks.items():
+            page_number = self._page_number_from_chunk_id(chunk_id)
+            if entry.status != ChunkStatus.SUCCESS:
+                continue
+            hash_pool_by_page.setdefault(page_number, {}).setdefault(entry.content_hash, []).append(entry)
+
+        claimed_old_ids: set[str] = set()
         to_embed: list[Chunk] = []
+        to_reuse: list[tuple[Chunk, str]] = []  # (new_chunk, source_old_chunk_id)
+        chunk_version_by_id: dict[str, int] = {}
         unchanged_count = 0
 
         for chunk in new_chunks:
             old_entry = previous_chunks.get(chunk.chunk_id)
+
             if (
                 old_entry is not None
                 and old_entry.content_hash == chunk.content_hash
                 and old_entry.status == ChunkStatus.SUCCESS
             ):
                 unchanged_count += 1
-            else:
-                to_embed.append(chunk)
+                chunk_version_by_id[chunk.chunk_id] = old_entry.chunk_version
+                claimed_old_ids.add(chunk.chunk_id)
+                continue
+
+            page_pool = hash_pool_by_page.get(chunk.page_number or 1, {})
+            candidates = page_pool.get(chunk.content_hash or "", [])
+            reusable = next((c for c in candidates if c.chunk_id not in claimed_old_ids), None)
+
+            if reusable is not None:
+                to_reuse.append((chunk, reusable.chunk_id))
+                chunk_version_by_id[chunk.chunk_id] = reusable.chunk_version
+                claimed_old_ids.add(reusable.chunk_id)
+                continue
+
+            to_embed.append(chunk)
+            chunk_version_by_id[chunk.chunk_id] = (
+                (old_entry.chunk_version + 1) if old_entry is not None else 1
+            )
+
+        stale_chunk_ids = set(previous_chunks.keys()) - new_chunk_ids
 
         # Page-level stats are informational (Phase 16's log shape asks
         # for them explicitly) - computed independently of the embed
@@ -179,6 +237,51 @@ class IncrementalIndexer:
         failures: list[str] = []
         status_by_chunk_id: dict[str, ChunkStatus] = {}
         error_by_chunk_id: dict[str, str] = {}
+        next_version = self._next_version(previous, document_hash, fingerprint_changed)
+        indexed_at = datetime.now(timezone.utc)
+
+        # Fetch every reused embedding BEFORE writing anything - a
+        # source chunk's old id can coincide with a *different* new
+        # chunk's id (a one-position shift), so writing as we go could
+        # overwrite a still-unread source entry before its own reuse
+        # lookup runs. All reads happen first, all writes happen after,
+        # so ordering never corrupts a read that hasn't happened yet.
+        reused_embeddings: dict[str, list[float]] = {}
+        reuse_fallback: list[Chunk] = []
+        for chunk, source_old_id in to_reuse:
+            embedding = None
+            try:
+                embedding = self.vector_store.get_embedding(source_old_id)
+            except Exception as ex:
+                logger.warning(
+                    "incremental_ingest_embedding_reuse_fetch_failed",
+                    extra={"document_id": document.document_id, "source_chunk_id": source_old_id, "error": str(ex)}
+                )
+
+            if embedding is None:
+                reuse_fallback.append(chunk)
+            else:
+                reused_embeddings[chunk.chunk_id] = embedding
+
+        reused_count = len(to_reuse) - len(reuse_fallback)
+        to_embed.extend(reuse_fallback)
+
+        for chunk_id, embedding in reused_embeddings.items():
+            chunk = next(c for c in new_chunks if c.chunk_id == chunk_id)
+            stored_chunk = self._stamp_chunk(
+                chunk, next_version, chunk_version_by_id[chunk.chunk_id], indexed_at, file_name
+            )
+            try:
+                self.vector_store.add(stored_chunk, embedding)
+                status_by_chunk_id[chunk.chunk_id] = ChunkStatus.SUCCESS
+            except Exception as ex:
+                logger.warning(
+                    "incremental_ingest_chunk_index_failed",
+                    extra={"document_id": document.document_id, "chunk_id": chunk.chunk_id, "error": str(ex)}
+                )
+                status_by_chunk_id[chunk.chunk_id] = ChunkStatus.FAILED
+                error_by_chunk_id[chunk.chunk_id] = str(ex)
+                failures.append(f"{chunk.chunk_id}: INDEX_FAILED {ex}")
 
         if to_embed:
             try:
@@ -199,17 +302,10 @@ class IncrementalIndexer:
                 embeddings = None
 
             if embeddings is not None:
-                indexed_at = datetime.now(timezone.utc)
-                next_version = self._next_version(previous, document_hash, fingerprint_changed)
-
                 for chunk, embedding in zip(to_embed, embeddings, strict=True):
-                    stored_chunk = chunk.model_copy(update={
-                        "embedding_provider": self.embedder.provider_name,
-                        "embedding_model": getattr(self.embedder, "model_name", None),
-                        "embedding_version": str(self.embedder.dimensions),
-                        "document_version": next_version,
-                        "indexed_at": indexed_at
-                    })
+                    stored_chunk = self._stamp_chunk(
+                        chunk, next_version, chunk_version_by_id[chunk.chunk_id], indexed_at, file_name
+                    )
                     try:
                         self.vector_store.add(stored_chunk, embedding)
                         status_by_chunk_id[chunk.chunk_id] = ChunkStatus.SUCCESS
@@ -231,7 +327,6 @@ class IncrementalIndexer:
                     extra={"document_id": document.document_id, "chunk_id": stale_chunk_id, "error": str(ex)}
                 )
 
-        next_version = self._next_version(previous, document_hash, fingerprint_changed)
         manifest = self._build_manifest(
             document=document,
             new_chunks=new_chunks,
@@ -240,6 +335,7 @@ class IncrementalIndexer:
             previous_chunks=previous_chunks,
             status_by_chunk_id=status_by_chunk_id,
             error_by_chunk_id=error_by_chunk_id,
+            chunk_version_by_id=chunk_version_by_id,
             document_hash=document_hash,
             fingerprint=fingerprint,
             chunking_version=chunking_version,
@@ -263,9 +359,10 @@ class IncrementalIndexer:
             total_chunks=len(new_chunks),
             changed_chunks=len(to_embed),
             unchanged_chunks=unchanged_count,
+            reused_chunks=reused_count,
             deleted_chunks=len(stale_chunk_ids),
             embedding_calls=embedding_calls,
-            embedding_skipped_count=unchanged_count,
+            embedding_skipped_count=unchanged_count + reused_count,
             embedding_failures=failures,
             processing_duration_seconds=time.monotonic() - started,
             indexed_chunk_count=indexed_chunk_count
@@ -284,6 +381,7 @@ class IncrementalIndexer:
                 "total_chunks": result.total_chunks,
                 "changed_chunks": result.changed_chunks,
                 "unchanged_chunks": result.unchanged_chunks,
+                "reused_chunks": result.reused_chunks,
                 "deleted_chunks": result.deleted_chunks,
                 "embedding_count": result.embedding_calls,
                 "embedding_skipped_count": result.embedding_skipped_count,
@@ -293,6 +391,41 @@ class IncrementalIndexer:
         )
 
         return result
+
+    def _stamp_chunk(
+        self,
+        chunk: Chunk,
+        document_version: int,
+        chunk_version: int,
+        indexed_at: datetime,
+        file_name: str
+    ) -> Chunk:
+        return chunk.model_copy(update={
+            "embedding_provider": self.embedder.provider_name,
+            "embedding_model": getattr(self.embedder, "model_name", None),
+            "embedding_version": str(self.embedder.dimensions),
+            "document_version": document_version,
+            "chunk_version": chunk_version,
+            "indexed_at": indexed_at,
+            "chunk_label": (
+                f"{file_name}:v{document_version}.{chunk_version}:"
+                f"{chunk.chunk_id}:{indexed_at.date().isoformat()}"
+            )
+        })
+
+    def _page_number_from_chunk_id(
+        self,
+        chunk_id: str
+    ) -> int:
+        # chunk_id shape is "{document_id}:p{page}:c{index}" - the
+        # page-scoping for reuse only needs the page segment, not a full
+        # parse of the id, and falls back to 1 for any id predating this
+        # scheme (defensive, not expected in practice).
+        try:
+            page_segment = chunk_id.rsplit(":", 2)[-2]
+            return int(page_segment.removeprefix("p"))
+        except (IndexError, ValueError):
+            return 1
 
     def _next_version(
         self,
@@ -315,6 +448,7 @@ class IncrementalIndexer:
         previous_chunks: dict[str, ChunkManifestEntry],
         status_by_chunk_id: dict[str, ChunkStatus],
         error_by_chunk_id: dict[str, str],
+        chunk_version_by_id: dict[str, int],
         document_hash: str,
         fingerprint: str,
         chunking_version: str,
@@ -337,6 +471,7 @@ class IncrementalIndexer:
             chunk_entries[chunk.chunk_id] = ChunkManifestEntry(
                 chunk_id=chunk.chunk_id,
                 content_hash=chunk.content_hash or "",
+                chunk_version=chunk_version_by_id.get(chunk.chunk_id, 1),
                 status=status,
                 error=error_by_chunk_id.get(chunk.chunk_id)
             )

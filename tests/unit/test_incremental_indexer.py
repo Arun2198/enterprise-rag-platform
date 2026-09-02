@@ -348,3 +348,94 @@ def test_performance_optimization_exact_embedding_call_count():
     assert result.changed_chunks == 2
     assert embedder.call_count == 2  # new approach: 2 calls, not total_chunks
     assert embedder.call_count < total_chunks
+
+
+# 12. content-addressed reuse: inserting a new section shifts every later
+# section's chunk_id (position drift within the page), but their own text
+# is untouched - only the genuinely new section should trigger a real
+# embedding call; the shifted-but-unchanged ones get their existing
+# embedding copied forward instead of recomputed.
+def test_position_shift_without_content_change_reuses_the_embedding_instead_of_recomputing():
+    indexer, embedder, vector_store, manifest_store = _build_indexer()
+    doc = Document(
+        document_id="doc-j",
+        source="doc-j.md",
+        document_type="markdown",
+        content="ignored",
+        pages=[
+            "# Alpha Section\nAlpha content stays exactly the same the whole time.\n"
+            "# Bravo Section\nBravo content also stays exactly the same the whole time.\n"
+            "# Charlie Section\nCharlie content also stays exactly the same the whole time.\n"
+        ],
+        metadata={"file_name": "doc-j.md"}
+    )
+    indexer.index(doc)
+    embedder.embedded_texts.clear()
+
+    edited = doc.model_copy(update={
+        "pages": [
+            "# New Section\nThis is a brand new section inserted at the very start.\n"
+            "# Alpha Section\nAlpha content stays exactly the same the whole time.\n"
+            "# Bravo Section\nBravo content also stays exactly the same the whole time.\n"
+            "# Charlie Section\nCharlie content also stays exactly the same the whole time.\n"
+        ]
+    })
+    result = indexer.index(edited)
+
+    assert result.total_chunks == 4
+    assert result.changed_chunks == 1  # only "New Section" needed a real embedding call
+    assert result.reused_chunks == 3  # Alpha/Bravo/Charlie moved position, embeddings reused
+    assert embedder.call_count == 1
+    assert "New Section" in embedder.embedded_texts[0] or "brand new section" in embedder.embedded_texts[0]
+    assert vector_store.count() == 4
+
+    manifest = manifest_store.get("doc-j")
+    for chunk_id, entry in manifest.chunks.items():
+        assert entry.status == ChunkStatus.SUCCESS
+
+
+# chunk_version: increments only when a chunk's own content actually
+# changes, independent of document_version (which tracks the whole
+# document) and independent of a chunk merely moving position.
+def test_chunk_version_increments_only_when_that_chunks_content_actually_changes():
+    indexer, embedder, vector_store, manifest_store = _build_indexer()
+    doc = _make_document("doc-k", page_count=3)
+    indexer.index(doc)
+
+    manifest_v1 = manifest_store.get("doc-k")
+    page1_chunk_id = next(p.chunk_ids[0] for p in manifest_v1.pages if p.page_number == 1)
+    assert manifest_v1.chunks[page1_chunk_id].chunk_version == 1
+
+    changed = _make_document("doc-k", page_count=3, changed_pages={
+        1: "Page 1 Heading\nCompletely rewritten content for page one only."
+    })
+    indexer.index(changed)
+
+    manifest_v2 = manifest_store.get("doc-k")
+    edited_chunk_id = next(p.chunk_ids[0] for p in manifest_v2.pages if p.page_number == 1)
+    untouched_page_chunk_id = next(p.chunk_ids[0] for p in manifest_v2.pages if p.page_number == 2)
+
+    assert manifest_v2.chunks[edited_chunk_id].chunk_version == 2
+    assert manifest_v2.chunks[untouched_page_chunk_id].chunk_version == 1
+
+    stored_edited = vector_store.get(edited_chunk_id)
+    assert stored_edited.chunk_version == 2
+    assert stored_edited.document_version == 2
+
+
+def test_chunk_label_carries_file_name_version_and_date():
+    indexer, embedder, vector_store, manifest_store = _build_indexer()
+    doc = _make_document("doc-l", page_count=1)
+    doc = doc.model_copy(update={"metadata": {"file_name": "doc-l.pdf"}})
+
+    indexer.index(doc)
+
+    manifest = manifest_store.get("doc-l")
+    chunk_id = next(iter(manifest.chunks.keys()))
+    stored = vector_store.get(chunk_id)
+
+    assert stored.chunk_label is not None
+    assert "doc-l.pdf" in stored.chunk_label
+    assert f"v{stored.document_version}.{stored.chunk_version}" in stored.chunk_label
+    assert chunk_id in stored.chunk_label
+    assert stored.indexed_at.date().isoformat() in stored.chunk_label

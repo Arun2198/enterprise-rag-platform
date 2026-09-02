@@ -18,6 +18,7 @@ class ChunkStatus(str, Enum):
 class ChunkManifestEntry(BaseModel):
     chunk_id: str
     content_hash: str
+    chunk_version: int = 1
     status: ChunkStatus = ChunkStatus.PENDING
     error: str | None = None
 

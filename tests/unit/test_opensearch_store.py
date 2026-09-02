@@ -40,12 +40,15 @@ class FakeOpenSearchClient:
         self.delete_calls = []
         self.delete_by_query_calls = []
         self.update_calls = []
+        self.get_calls = []
         self.bulk_errors = False
         self.indices = FakeIndicesClient()
         self.cluster = FakeClusterClient(health_response)
+        self.stored_documents: dict[str, dict] = {}
 
     def index(self, index, id, body):
         self.index_calls.append({"index": index, "id": id, "body": body})
+        self.stored_documents[id] = body
 
     def bulk(self, body):
         self.bulk_calls.append(body)
@@ -80,6 +83,14 @@ class FakeOpenSearchClient:
                 ]
             }
         }
+
+    def get(self, index, id, ignore=None):
+        self.get_calls.append({"index": index, "id": id, "ignore": ignore})
+
+        if id not in self.stored_documents:
+            return {"found": False}
+
+        return {"found": True, "_source": self.stored_documents[id]}
 
     def delete(self, index, id, ignore=None):
         self.delete_calls.append({"index": index, "id": id, "ignore": ignore})
@@ -270,3 +281,22 @@ def test_add_allows_any_dimension_when_none_is_configured():
     store.add(_chunk(), [0.1, 0.2])
 
     assert client.index_calls[0]["id"] == "doc:0"
+
+
+def test_get_embedding_returns_the_stored_vector():
+
+    client = FakeOpenSearchClient()
+    store = OpenSearchVectorStore(client=client, index_name="chunks")
+    store.add(_chunk(), [0.1, 0.2, 0.3])
+
+    embedding = store.get_embedding("doc:0")
+
+    assert embedding == [0.1, 0.2, 0.3]
+
+
+def test_get_embedding_returns_none_for_an_unknown_chunk_id():
+
+    client = FakeOpenSearchClient()
+    store = OpenSearchVectorStore(client=client, index_name="chunks")
+
+    assert store.get_embedding("never-indexed") is None
