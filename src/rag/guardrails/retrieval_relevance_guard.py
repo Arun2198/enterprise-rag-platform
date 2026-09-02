@@ -4,6 +4,7 @@ from rag.guardrails.base import GuardrailContext
 from rag.guardrails.base import GuardrailFinding
 from rag.guardrails.base import GuardrailStage
 from rag.guardrails.base import Severity
+from rag.retrieval.relevance import best_retrieval_relevance
 
 # Calibrated with scripts/retrieval_relevance_guard_verification.py: for
 # each of evaluation/golden_dataset.json's 24 real queries, ran the query
@@ -154,11 +155,7 @@ class RetrievalRelevanceGuard:
                 message="empty query - relevance check skipped"
             )
 
-        query_embedding = self.embedder.embed(query)
-        best_score = max(
-            self._cosine_similarity(query_embedding, self.embedder.embed(item.chunk.text))
-            for item in context.retrieved_chunks[:3]
-        )
+        best_score = best_retrieval_relevance(self.embedder, query, context.retrieved_chunks)
         low_relevance = best_score < self.threshold
 
         return GuardrailFinding(
@@ -176,17 +173,3 @@ class RetrievalRelevanceGuard:
                 "low_retrieval_relevance": low_relevance
             }
         )
-
-    def _cosine_similarity(
-        self,
-        first: list[float],
-        second: list[float]
-    ) -> float:
-        numerator = sum(a * b for a, b in zip(first, second, strict=True))
-        first_norm = sum(a * a for a in first) ** 0.5
-        second_norm = sum(b * b for b in second) ** 0.5
-
-        if first_norm == 0 or second_norm == 0:
-            return 0.0
-
-        return numerator / (first_norm * second_norm)
