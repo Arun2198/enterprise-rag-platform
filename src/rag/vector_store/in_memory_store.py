@@ -93,6 +93,13 @@ class InMemoryVectorStore:
         record = self._records.get(chunk_id)
         return record[0] if record else None
 
+    def get_embedding(
+        self,
+        chunk_id: str
+    ) -> list[float] | None:
+        record = self._records.get(chunk_id)
+        return record[1] if record else None
+
     def delete(
         self,
         chunk_id: str

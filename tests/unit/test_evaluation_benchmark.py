@@ -27,7 +27,7 @@ def _build_dataset_file(tmp_path):
 
     # discover real chunk ids the same way the real golden dataset was
     # built, so the fixture is grounded rather than guessed
-    document = IngestionPipeline().ingest_file(str(doc_path)).data
+    document = IngestionPipeline().ingest_file(str(doc_path), document_id="policy").data
     chunks = RecursiveChunker(chunk_size=60, chunk_overlap=10, minimum_chunk_size=5).chunk(document).data
     contractor_chunk = next(c for c in chunks if "Contractors" in c.text)
 

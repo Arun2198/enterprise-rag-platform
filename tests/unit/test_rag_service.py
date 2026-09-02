@@ -60,7 +60,7 @@ def test_ingest_embeds_all_chunks_of_a_document_in_one_batch_call(tmp_path):
         chunker=RecursiveChunker(chunk_size=120, chunk_overlap=20, minimum_chunk_size=10)
     )
 
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     assert len(embedder.embed_batch_calls) == 1
     assert embedder.embed_calls == []
@@ -73,9 +73,9 @@ def test_ingest_stamps_embedding_lineage_onto_indexed_chunks(tmp_path):
     file_path.write_text("Employees receive 20 days of paid leave annually.", encoding="utf-8")
     service = RAGService(chunker=RecursiveChunker(chunk_size=900, chunk_overlap=50, minimum_chunk_size=10))
 
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["leave_policy"])
 
-    stored_chunk = service.vector_store.get("leave_policy:0")
+    stored_chunk = service.vector_store.get("leave_policy:p1:c0")
     assert stored_chunk.embedding_provider == "hashing"
     assert stored_chunk.embedding_model == "hashing-384"
     assert stored_chunk.embedding_version == "384"
@@ -101,7 +101,7 @@ def test_rag_service_ingests_and_answers_from_markdown(tmp_path):
         )
     )
 
-    ingest_response = service.ingest([str(file_path)])
+    ingest_response = service.ingest([str(file_path)], document_ids=["test-doc"])
     ask_response = service.ask("How many leave days do contractors receive?")
 
     assert ingest_response.indexed_documents == 1
@@ -117,7 +117,7 @@ def test_ingest_allows_any_path_when_no_allowed_dir_configured(tmp_path):
     file_path.write_text("# Notes\nSome content here for the pipeline.", encoding="utf-8")
     service = RAGService()
 
-    response = service.ingest([str(file_path)])
+    response = service.ingest([str(file_path)], document_ids=["notes"])
 
     assert response.indexed_documents == 1
     assert response.errors == []
@@ -131,7 +131,7 @@ def test_ingest_allows_files_inside_the_configured_directory(tmp_path):
     file_path.write_text("# Notes\nSome content here for the pipeline.", encoding="utf-8")
     service = RAGService(ingest_allowed_dir=str(allowed_dir))
 
-    response = service.ingest([str(file_path)])
+    response = service.ingest([str(file_path)], document_ids=["notes"])
 
     assert response.indexed_documents == 1
     assert response.errors == []
@@ -145,7 +145,7 @@ def test_ingest_rejects_a_path_outside_the_configured_directory(tmp_path):
     outside_file.write_text("# Secret\nShould never be readable via ingest.", encoding="utf-8")
     service = RAGService(ingest_allowed_dir=str(allowed_dir))
 
-    response = service.ingest([str(outside_file)])
+    response = service.ingest([str(outside_file)], document_ids=["secret"])
 
     assert response.indexed_documents == 0
     assert response.indexed_chunks == 0
@@ -161,7 +161,7 @@ def test_ingest_rejects_a_traversal_path_that_escapes_the_allowed_directory(tmp_
     service = RAGService(ingest_allowed_dir=str(allowed_dir))
 
     traversal_path = str(allowed_dir / ".." / "secret.md")
-    response = service.ingest([traversal_path])
+    response = service.ingest([traversal_path], document_ids=["secret"])
 
     assert response.indexed_documents == 0
     assert "PATH_NOT_ALLOWED" in response.errors[0]
@@ -173,7 +173,7 @@ def test_ingest_rejects_an_absolute_path_outside_the_allowed_directory(tmp_path)
     allowed_dir.mkdir()
     service = RAGService(ingest_allowed_dir=str(allowed_dir))
 
-    response = service.ingest(["/etc/passwd"])
+    response = service.ingest(["/etc/passwd"], document_ids=["passwd"])
 
     assert response.indexed_documents == 0
     assert "PATH_NOT_ALLOWED" in response.errors[0]
@@ -187,7 +187,7 @@ def test_ingest_allows_a_file_directly_at_the_allowed_directory_root(tmp_path):
     file_path.write_text("# Root\nContent directly in the allowed directory.", encoding="utf-8")
     service = RAGService(ingest_allowed_dir=str(allowed_dir))
 
-    response = service.ingest([str(file_path)])
+    response = service.ingest([str(file_path)], document_ids=["root"])
 
     assert response.indexed_documents == 1
 
@@ -282,7 +282,7 @@ def test_ask_forwards_reranked_chunks_unchanged_to_answerer(tmp_path):
         candidate_multiplier=4,
         hallucination_guard_enabled=False
     )
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("policy question", top_k=3)
 
@@ -310,7 +310,7 @@ def test_ask_redacts_pii_in_final_answer(tmp_path):
         answerer=_FixedAnswerer("Contact john@company.com for help."),
         hallucination_guard_enabled=False
     )
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("policy question", top_k=3)
 
@@ -327,7 +327,7 @@ def test_ask_flags_hallucination_in_guardrail_flags(tmp_path):
     service = RAGService(
         answerer=_FixedAnswerer("Completely unrelated statement about astronomy.")
     )
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("policy question", top_k=3)
 
@@ -344,7 +344,7 @@ def test_ask_clean_answer_passes_guardrails_unchanged(tmp_path):
     )
 
     service = RAGService(answerer=_FixedAnswerer("Contractors receive 10 days of leave."))
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("How many leave days do contractors receive?", top_k=3)
 
@@ -362,7 +362,7 @@ def test_ask_bypasses_guardrails_when_disabled(tmp_path):
         answerer=_FixedAnswerer("Contact john@company.com for help."),
         guardrails_enabled=False
     )
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("policy question", top_k=3)
 
@@ -425,7 +425,7 @@ def test_ask_blocks_and_hides_sources_when_output_guardrail_blocks(tmp_path):
         answerer=_FixedAnswerer("some answer"),
         guardrail_manager=guardrail_manager
     )
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("policy question", top_k=3)
 
@@ -508,7 +508,7 @@ def test_unrestricted_chunks_are_visible_to_any_caller(tmp_path):
     file_path = tmp_path / "public.md"
     file_path.write_text("Public information anyone can read about the office.", encoding="utf-8")
     service = RAGService(chunker=RecursiveChunker(chunk_size=900, chunk_overlap=50, minimum_chunk_size=10))
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("office", access_groups=None)
 
@@ -563,7 +563,7 @@ def test_confidence_uses_groundedness_not_raw_retrieval_score(tmp_path):
         hallucination_guard_enabled=True,
         groundedness_threshold=0.9  # deliberately strict so groundedness comes back low
     )
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("How many leave days do contractors receive?")
 
@@ -576,7 +576,7 @@ def test_confidence_falls_back_to_retrieval_score_when_hallucination_guard_disab
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
     service = RAGService(hallucination_guard_enabled=False)
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("How many leave days do contractors receive?")
 
@@ -594,7 +594,7 @@ def test_sources_expose_document_version_section_and_retrieval_method(tmp_path):
         encoding="utf-8"
     )
     service = RAGService()
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("How many leave days do contractors receive?")
 
@@ -612,7 +612,7 @@ def test_low_groundedness_answer_is_replaced_with_an_abstention_message(tmp_path
     file_path = tmp_path / "policy.md"
     file_path.write_text("# Policy\nContractors receive 10 days of leave.", encoding="utf-8")
     service = RAGService(answerer=_FixedAnswerer("Completely unrelated statement about astronomy."))
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("policy question", top_k=3)
 
@@ -625,7 +625,7 @@ def test_abstention_keeps_sources_for_auditability(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("# Policy\nContractors receive 10 days of leave.", encoding="utf-8")
     service = RAGService(answerer=_FixedAnswerer("Completely unrelated statement about astronomy."))
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("policy question", top_k=3)
 
@@ -640,7 +640,7 @@ def test_abstention_can_be_disabled(tmp_path):
         answerer=_FixedAnswerer("Completely unrelated statement about astronomy."),
         abstention_enabled=False
     )
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("policy question", top_k=3)
 
@@ -652,7 +652,7 @@ def test_grounded_answer_is_not_replaced_by_abstention(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
     service = RAGService()
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("How many leave days do contractors receive?")
 
@@ -664,7 +664,7 @@ def test_delete_document_removes_all_its_chunks(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("# Policy\nSome policy content here that is long enough.", encoding="utf-8")
     service = RAGService(chunker=RecursiveChunker(chunk_size=30, chunk_overlap=5, minimum_chunk_size=5))
-    ingest_response = service.ingest([str(file_path)])
+    ingest_response = service.ingest([str(file_path)], document_ids=["policy"])
 
     deleted_count = service.delete_document("policy")
 
@@ -684,7 +684,7 @@ def test_deleted_document_chunks_no_longer_appear_in_ask_sources(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
     service = RAGService()
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["policy"])
 
     service.delete_document("policy")
     response = service.ask("How many leave days do contractors receive?")
@@ -697,11 +697,11 @@ def test_reindex_document_replaces_old_chunks_with_new_ones(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
     service = RAGService()
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["policy"])
     assert len(service.vector_store) == 1
 
     file_path.write_text("Contractors receive 15 days of leave now.", encoding="utf-8")
-    result = service.reindex_document(str(file_path))
+    result = service.reindex_document(str(file_path), document_id="policy")
 
     assert result.indexed_documents == 1
     assert len(service.vector_store) == 1
@@ -713,10 +713,126 @@ def test_reindex_document_reports_error_for_a_missing_file(tmp_path):
 
     service = RAGService()
 
-    result = service.reindex_document(str(tmp_path / "does-not-exist.md"))
+    result = service.reindex_document(str(tmp_path / "does-not-exist.md"), document_id="does-not-exist")
 
     assert result.indexed_documents == 0
     assert result.errors
+
+
+def test_reindex_document_with_manifest_store_skips_embedding_unchanged_content(tmp_path):
+    """
+    With incremental indexing on (manifest_store set), re-running reindex
+    on a file whose content hasn't actually changed since the last
+    ingest must not re-embed anything - reindex_document() skips its old
+    unconditional delete_document() call in this mode specifically so
+    IncrementalIndexer's own diff (not a blind full replace) decides what
+    needs touching.
+    """
+    from ingestion.manifest_store import InMemoryManifestStore
+
+    class _CountingEmbedder:
+        def __init__(self):
+            from rag.embeddings.hashing_embedder import HashingEmbedder
+            self._inner = HashingEmbedder()
+            self.dimensions = 384
+            self.provider_name = "hashing"
+            self.model_name = "hashing-384"
+            self.calls = 0
+
+        def embed(self, text):
+            return self._inner.embed(text)
+
+        def embed_batch(self, texts):
+            self.calls += len(texts)
+            return self._inner.embed_batch(texts)
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
+    embedder = _CountingEmbedder()
+    service = RAGService(embedder=embedder, manifest_store=InMemoryManifestStore())
+    service.ingest([str(file_path)], document_ids=["policy"])
+    assert embedder.calls == 1
+
+    result = service.reindex_document(str(file_path), document_id="policy")
+
+    assert result.indexed_documents == 1
+    assert embedder.calls == 1  # no new embedding call for unchanged content
+    assert len(service.vector_store) == 1
+
+
+def test_ingest_document_ids_override_the_filename_derived_identity(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
+    service = RAGService()
+
+    service.ingest([str(file_path)], document_ids=["stable-id-123"])
+
+    assert service.vector_store.get("stable-id-123:p1:c0") is not None
+
+
+def test_ingest_document_ids_length_mismatch_is_reported_as_an_error(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
+    service = RAGService()
+
+    result = service.ingest([str(file_path)], document_ids=["a", "b"])
+
+    assert result.indexed_documents == 0
+    assert "DOCUMENT_IDS_LENGTH_MISMATCH" in result.errors[0]
+    assert len(service.vector_store) == 0
+
+
+def test_ingest_with_explicit_document_id_is_recognized_across_a_file_rename(tmp_path):
+    """
+    Incremental ingestion (manifest_store set) diffs by document_id - a
+    caller that keeps passing the same explicit document_id across a
+    rename must see the second ingest recognized as the same document
+    (zero new embeddings for unchanged content), not treated as new.
+    """
+    from ingestion.manifest_store import InMemoryManifestStore
+    from rag.embeddings.hashing_embedder import HashingEmbedder
+
+    class _CountingEmbedder(HashingEmbedder):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def embed_batch(self, texts):
+            self.calls += len(texts)
+            return super().embed_batch(texts)
+
+    original = tmp_path / "policy-v1.md"
+    original.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
+    renamed = tmp_path / "policy-v2-renamed.md"
+    renamed.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
+
+    embedder = _CountingEmbedder()
+    service = RAGService(embedder=embedder, manifest_store=InMemoryManifestStore())
+
+    service.ingest([str(original)], document_ids=["stable-id-123"])
+    assert embedder.calls == 1
+
+    result = service.ingest([str(renamed)], document_ids=["stable-id-123"])
+
+    assert result.indexed_documents == 1
+    assert embedder.calls == 1  # renamed file, same id, same content -> no re-embed
+    assert len(service.vector_store) == 1  # not duplicated under a second identity
+
+
+def test_reindex_document_accepts_an_explicit_document_id(tmp_path):
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_path)], document_ids=["stable-id-123"])
+
+    file_path.write_text("Contractors receive 15 days of leave now.", encoding="utf-8")
+    result = service.reindex_document(str(file_path), document_id="stable-id-123")
+
+    assert result.indexed_documents == 1
+    assert service.vector_store.get("stable-id-123:p1:c0") is not None
 
 
 def test_ask_with_trace_returns_matching_ask_response(tmp_path):
@@ -724,7 +840,7 @@ def test_ask_with_trace_returns_matching_ask_response(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
     service = RAGService()
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     plain_response = service.ask("How many leave days do contractors receive?")
     traced_response, trace = service.ask_with_trace("How many leave days do contractors receive?")
@@ -739,7 +855,7 @@ def test_ask_with_trace_records_dense_and_bm25_candidates(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
     service = RAGService()
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     _, trace = service.ask_with_trace("How many leave days do contractors receive?")
 
@@ -761,7 +877,7 @@ def test_ask_with_trace_records_reranker_candidates_when_reranker_configured(tmp
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
     service = RAGService(reranker=_StubReranker())
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     _, trace = service.ask_with_trace("How many leave days do contractors receive?")
 
@@ -774,7 +890,7 @@ def test_ask_with_trace_records_groundedness_and_guardrail_findings(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
     service = RAGService()
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     _, trace = service.ask_with_trace("How many leave days do contractors receive?")
 
@@ -840,7 +956,7 @@ def _service_with_retrieval_relevance_guard(tmp_path, threshold=0.5):
         retrieval_relevance_guard_enabled=True,
         retrieval_relevance_threshold=threshold
     )
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
     return service
 
 
@@ -875,7 +991,7 @@ def test_retrieval_relevance_guard_disabled_by_default(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("MARKER Contractors receive 10 days of leave.", encoding="utf-8")
     service = RAGService(embedder=_MarkerEmbedder())
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("completely unrelated topic")
 
@@ -899,7 +1015,7 @@ def test_ask_extracts_valid_citations_from_llm_style_answer(tmp_path):
     service = RAGService(answerer=_FixedAnswerer(
         "Contractors receive 10 days of leave [Source 1]."
     ))
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("How many leave days do contractors receive?")
 
@@ -916,7 +1032,7 @@ def test_ask_flags_invalid_citation_to_a_nonexistent_source(tmp_path):
     service = RAGService(answerer=_FixedAnswerer(
         "Contractors receive 10 days of leave per year [Source 1] [Source 9]."
     ))
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("How many leave days do contractors receive?")
 
@@ -931,7 +1047,7 @@ def test_ask_returns_no_citations_for_extractive_answers(tmp_path):
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
     service = RAGService()
-    service.ingest([str(file_path)])
+    service.ingest([str(file_path)], document_ids=["test-doc"])
 
     response = service.ask("How many leave days do contractors receive?")
 

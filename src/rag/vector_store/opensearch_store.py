@@ -196,6 +196,24 @@ class OpenSearchVectorStore:
         )
         return self._results_from_response(response)
 
+    def get_embedding(
+        self,
+        chunk_id: str
+    ) -> list[float] | None:
+        """
+        Fetches a previously stored chunk's raw embedding vector back
+        out - used by IncrementalIndexer to reuse an unchanged chunk's
+        embedding under a new chunk_id (its position on the page
+        shifted but its content, and therefore its embedding, didn't)
+        without a real embedding-model/API call.
+        """
+        response = self.client.get(index=self.index_name, id=chunk_id, ignore=[404])
+
+        if not response.get("found", False):
+            return None
+
+        return response.get("_source", {}).get("embedding")
+
     def delete(
         self,
         chunk_id: str

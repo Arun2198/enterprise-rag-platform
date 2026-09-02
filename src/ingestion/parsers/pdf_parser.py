@@ -30,17 +30,13 @@ class PDFParser(BaseParser):
 
             reader = PdfReader(file_path)
 
-            text_content = []
-
-            for page in reader.pages:
-
-                page_text = page.extract_text()
-
-                if not page_text:
-                    continue
-                text_content.append(page_text)
-
-            content = "\n".join(text_content)
+            # One entry per physical page, empty string for a page with no
+            # extractable text (e.g. a scanned image) rather than skipping
+            # it - downstream chunking needs pages[i] to always mean
+            # "page i+1", not a compacted list that silently shifts once
+            # any page in the middle turns out blank.
+            pages = [page.extract_text() or "" for page in reader.pages]
+            content = "\n".join(text for text in pages if text)
 
             if not content.strip():
                 return Result(
@@ -56,6 +52,7 @@ class PDFParser(BaseParser):
                 source=str(path),
                 document_type="pdf",
                 content=content,
+                pages=pages,
                 metadata={
                     "page_count": len(reader.pages),
                     "file_name": path.name

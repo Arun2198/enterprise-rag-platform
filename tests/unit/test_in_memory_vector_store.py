@@ -27,3 +27,18 @@ def test_get_returns_none_for_an_unknown_id():
     store = InMemoryVectorStore()
 
     assert store.get("does-not-exist") is None
+
+
+def test_get_embedding_returns_the_stored_vector():
+
+    store = InMemoryVectorStore()
+    store.add(_chunk("doc:0"), [1.0, 0.0])
+
+    assert store.get_embedding("doc:0") == [1.0, 0.0]
+
+
+def test_get_embedding_returns_none_for_an_unknown_id():
+
+    store = InMemoryVectorStore()
+
+    assert store.get_embedding("does-not-exist") is None

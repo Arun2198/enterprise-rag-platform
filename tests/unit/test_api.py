@@ -37,7 +37,10 @@ def test_ingest_returns_503_when_rag_service_failed_to_initialize(monkeypatch):
     monkeypatch.setattr(main_module, "startup_error", "RuntimeError: model download failed")
     client = TestClient(app)
 
-    response = client.post("/ingest", json={"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"]})
+    response = client.post(
+        "/ingest",
+        json={"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"], "document_ids": ["AI-RMF-1stdraft"]}
+    )
 
     assert response.status_code == 503
     assert "model download failed" in response.json()["detail"]
@@ -98,7 +101,7 @@ def test_ingest_and_ask_endpoints(tmp_path, monkeypatch):
 
     ingest_response = client.post(
         "/ingest",
-        json={"file_paths": [str(file_path)]}
+        json={"file_paths": [str(file_path)], "document_ids": ["leave_policy"]}
     )
     ask_response = client.post(
         "/ask",
@@ -128,7 +131,7 @@ def test_ask_accepts_optional_client_id(tmp_path, monkeypatch):
     file_path = tmp_path / "policy.md"
     file_path.write_text("Some policy content for the client id test.", encoding="utf-8")
     client = TestClient(app)
-    client.post("/ingest", json={"file_paths": [str(file_path)]})
+    client.post("/ingest", json={"file_paths": [str(file_path)], "document_ids": ["policy"]})
 
     response = client.post(
         "/ask",
@@ -144,7 +147,10 @@ def test_ingest_endpoint_rejects_a_path_outside_the_allowed_directory(tmp_path):
     outside_file.write_text("# Secret\nShould never be readable via the API.", encoding="utf-8")
     client = TestClient(app)
 
-    response = client.post("/ingest", json={"file_paths": [str(outside_file)]})
+    response = client.post(
+        "/ingest",
+        json={"file_paths": [str(outside_file)], "document_ids": ["secret"]}
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -421,7 +427,7 @@ def test_ask_succeeds_with_a_valid_token_that_has_query_permission(monkeypatch, 
     monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
     file_path = tmp_path / "policy.md"
     file_path.write_text("Some policy content for the auth test.", encoding="utf-8")
-    TestClient(app).post("/ingest", json={"file_paths": [str(file_path)]})
+    TestClient(app).post("/ingest", json={"file_paths": [str(file_path)], "document_ids": ["policy"]})
 
     _enable_auth(monkeypatch, _FakeTokenValidator(
         user=AuthenticatedUser(subject="user-1", role=Role.READ_ONLY, claims={})
@@ -460,7 +466,7 @@ def test_ask_debug_succeeds_for_ml_engineer_and_matches_ask_shape(monkeypatch, t
     monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
     file_path = tmp_path / "policy.md"
     file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
-    TestClient(app).post("/ingest", json={"file_paths": [str(file_path)]})
+    TestClient(app).post("/ingest", json={"file_paths": [str(file_path)], "document_ids": ["policy"]})
 
     _enable_auth(monkeypatch, _FakeTokenValidator(
         user=AuthenticatedUser(subject="user-1", role=Role.ML_ENGINEER, claims={})
@@ -508,7 +514,7 @@ def test_ingest_returns_403_for_a_read_only_role(monkeypatch, tmp_path):
 
     response = client.post(
         "/ingest",
-        json={"file_paths": [str(tmp_path / "x.md")]},
+        json={"file_paths": [str(tmp_path / "x.md")], "document_ids": ["x"]},
         headers={"Authorization": "Bearer good-token"}
     )
 
@@ -531,7 +537,7 @@ def test_ingest_succeeds_for_a_data_scientist_role(monkeypatch, tmp_path):
 
     response = client.post(
         "/ingest",
-        json={"file_paths": [str(file_path)]},
+        json={"file_paths": [str(file_path)], "document_ids": ["policy"]},
         headers={"Authorization": "Bearer good-token"}
     )
 
@@ -660,6 +666,41 @@ def test_ingest_rejects_more_than_the_max_file_paths_per_request():
     assert response.status_code == 422
 
 
+def test_ingest_requires_document_ids():
+
+    client = TestClient(app)
+
+    response = client.post("/ingest", json={"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"]})
+
+    assert response.status_code == 422
+
+
+def test_ingest_rejects_document_ids_of_a_different_length_than_file_paths():
+
+    client = TestClient(app)
+
+    response = client.post(
+        "/ingest",
+        json={
+            "file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"],
+            "document_ids": ["a", "b"]
+        }
+    )
+
+    assert response.status_code == 422
+
+
+def test_reindex_requires_document_id(tmp_path):
+
+    file_path = tmp_path / "reindexme.md"
+    file_path.write_text("Some content.", encoding="utf-8")
+    client = TestClient(app)
+
+    response = client.post("/documents/reindex", json={"file_path": str(file_path)})
+
+    assert response.status_code == 422
+
+
 def test_unhandled_exception_returns_a_sanitized_500_not_the_raw_error(monkeypatch):
 
     def _boom(*args, **kwargs):
@@ -682,7 +723,7 @@ def test_delete_document_endpoint_removes_chunks(tmp_path, monkeypatch):
     file_path = tmp_path / "todelete.md"
     file_path.write_text("Some content to delete later.", encoding="utf-8")
     client = TestClient(app)
-    client.post("/ingest", json={"file_paths": [str(file_path)]})
+    client.post("/ingest", json={"file_paths": [str(file_path)], "document_ids": ["todelete"]})
 
     response = client.delete("/documents/todelete")
 
@@ -707,10 +748,13 @@ def test_reindex_endpoint_replaces_document(tmp_path, monkeypatch):
     file_path = tmp_path / "reindexme.md"
     file_path.write_text("Original content here for reindexing test.", encoding="utf-8")
     client = TestClient(app)
-    client.post("/ingest", json={"file_paths": [str(file_path)]})
+    client.post("/ingest", json={"file_paths": [str(file_path)], "document_ids": ["reindexme"]})
 
     file_path.write_text("Updated content here for reindexing test.", encoding="utf-8")
-    response = client.post("/documents/reindex", json={"file_path": str(file_path)})
+    response = client.post(
+        "/documents/reindex",
+        json={"file_path": str(file_path), "document_id": "reindexme"}
+    )
 
     assert response.status_code == 200
     assert response.json()["indexed_documents"] == 1
@@ -954,7 +998,7 @@ def test_full_conversation_flow_persists_and_threads_history(tmp_path, monkeypat
         encoding="utf-8"
     )
     client = TestClient(app)
-    client.post("/ingest", json={"file_paths": [str(file_path)]})
+    client.post("/ingest", json={"file_paths": [str(file_path)], "document_ids": ["policy"]})
 
     created = client.post("/conversations", json={"title": "Leave policy"})
     assert created.status_code == 200

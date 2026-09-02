@@ -23,7 +23,7 @@ def main() -> int:
     print(f"answerer: {type(service.answerer).__name__}")
     print(f"model: {settings.llm_model_name}")
 
-    ingest = service.ingest([SAMPLE_DOCUMENT])
+    ingest = service.ingest([SAMPLE_DOCUMENT], document_ids=["AI-RMF-1stdraft"])
     print(f"ingested: {ingest.indexed_documents} docs, {ingest.indexed_chunks} chunks")
 
     if ingest.errors:

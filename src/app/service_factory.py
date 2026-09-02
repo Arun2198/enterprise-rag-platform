@@ -4,6 +4,9 @@ from app.config import load_settings
 from app.conversation_store import ConversationStore
 from app.services.rag_service import RERANKER_FLAG_NAME
 from app.services.rag_service import RAGService
+from ingestion.manifest_store import InMemoryManifestStore
+from ingestion.manifest_store import ManifestStore
+from ingestion.manifest_store import S3ManifestStore
 from ingestion.s3_document_store import S3DocumentStore
 from ingestion.sqs_ingestion_worker import SQSIngestionWorker
 from mlops.backup import BackupManager
@@ -19,6 +22,7 @@ from rag.embeddings.jina_embedder import JinaEmbedder
 from rag.embeddings.sentence_transformer_embedder import SentenceTransformerEmbedder
 from rag.generation.base import Answerer
 from rag.generation.bedrock_answerer import BedrockAnswerer
+from rag.generation.document_first_answerer import DocumentFirstAnswerer
 from rag.generation.extractive_answerer import ExtractiveAnswerer
 from rag.generation.fallback_answerer import FallbackAnswerer
 from rag.generation.openai_compatible_answerer import OpenAICompatibleAnswerer
@@ -66,6 +70,21 @@ def build_rag_service(
         )
         answerer = FallbackAnswerer(primary=answerer, fallback=fallback_answerer)
 
+    if settings.document_first_answering_enabled and settings.generation_provider != "extractive":
+        # Only meaningful when an LLM-backed provider is actually
+        # configured - GENERATION_PROVIDER=extractive is already
+        # document-only, nothing to route away from. Wraps whatever was
+        # built above (including a FallbackAnswerer, if configured) as
+        # the "fall back to the LLM" branch, so document-first routing
+        # composes with the existing LLM fallback rather than competing
+        # with it.
+        answerer = DocumentFirstAnswerer(
+            document_answerer=ExtractiveAnswerer(),
+            llm_answerer=answerer,
+            embedder=embedder,
+            threshold=settings.retrieval_relevance_threshold
+        )
+
     reranker = _build_reranker(settings) if settings.reranker_enabled else None
 
     return RAGService(
@@ -80,7 +99,35 @@ def build_rag_service(
         dense_top_k=settings.dense_top_k,
         bm25_top_k=settings.bm25_top_k,
         rrf_k=settings.rrf_k,
-        abstention_enabled=settings.abstention_enabled
+        abstention_enabled=settings.abstention_enabled,
+        manifest_store=_build_manifest_store(settings)
+    )
+
+
+def _build_manifest_store(
+    settings: Settings
+) -> ManifestStore | None:
+    """
+    None (old, full-re-embed-every-time behavior) when
+    INCREMENTAL_INGESTION_ENABLED=false - an explicit opt-out, same
+    pattern as every other *_ENABLED flag in this file. Otherwise
+    in-process InMemoryManifestStore by default (works with zero config,
+    same durability tradeoff as InMemoryRateLimiter - correct for a
+    single ECS task, lost on restart/redeploy, not shared across
+    replicas), upgraded to durable S3ManifestStore once S3_BUCKET is
+    configured, the same opt-in-upgrade pattern as conversations/backups.
+    """
+    if not settings.incremental_ingestion_enabled:
+        return None
+
+    if not settings.s3_bucket:
+        return InMemoryManifestStore()
+
+    client = build_boto3_client("s3", region_name=settings.aws_region)
+    return S3ManifestStore(
+        client=client,
+        bucket_name=settings.s3_bucket,
+        prefix=settings.ingestion_manifests_s3_prefix
     )
 
 

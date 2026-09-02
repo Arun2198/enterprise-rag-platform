@@ -48,7 +48,7 @@ def main() -> int:
 
     embedder = JinaEmbedder(api_key=api_key)
     service = RAGService(embedder=embedder)
-    service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"])
+    service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"], document_ids=["AI-RMF-1stdraft"])
 
     dataset = json.loads(Path("evaluation/golden_dataset.json").read_text(encoding="utf-8"))
 

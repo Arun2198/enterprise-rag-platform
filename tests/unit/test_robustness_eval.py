@@ -45,7 +45,7 @@ def test_adversarial_cases_are_reliably_blocked_against_the_real_ai_rmf_pdf():
     doesn't matter which Answerer is configured.
     """
     service = _service_with_prompt_injection_guard()
-    service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"])
+    service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"], document_ids=["AI-RMF-1stdraft"])
     dataset = load_robustness_dataset("evaluation/robustness_dataset.json")
 
     report = run_robustness_eval(service, dataset, ABSTENTION_MESSAGE)
@@ -90,7 +90,7 @@ def test_known_gap_with_hash_quality_embeddings_extractive_answerer_does_not_abs
     embedder, this specific gap is not fixable by this signal.
     """
     service = _service_with_prompt_injection_guard()
-    service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"])
+    service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"], document_ids=["AI-RMF-1stdraft"])
     dataset = load_robustness_dataset("evaluation/robustness_dataset.json")
 
     report = run_robustness_eval(service, dataset, ABSTENTION_MESSAGE)

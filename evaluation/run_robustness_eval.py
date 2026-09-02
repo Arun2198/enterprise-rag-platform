@@ -51,7 +51,8 @@ def main(
     settings = load_settings()
     service = build_rag_service(settings)
     source_documents = args.source_document or ["sample_documents/AI-RMF-1stdraft.pdf"]
-    ingest_result = service.ingest(source_documents)
+    document_ids = [Path(path).stem for path in source_documents]
+    ingest_result = service.ingest(source_documents, document_ids=document_ids)
 
     if ingest_result.errors:
         for error in ingest_result.errors:
