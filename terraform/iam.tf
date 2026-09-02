@@ -193,6 +193,13 @@ resource "aws_iam_role_policy" "github_actions_deploy_extras" {
         # to EventBridge Scheduler (scheduler_invocation below), same as
         # ECS needs it for the task/execution roles - a from-scratch
         # apply failed creating both schedules over this.
+        #
+        # aws_iam_role.scheduler_invocation.arn is deliberately NOT used
+        # here (same reasoning as FrontendDeploy's literal ARN below) -
+        # referencing the resource attribute made this policy depend on
+        # scheduler_invocation, so any -target destroy plan that included
+        # it pulled this protected, prevent_destroy'd resource in too.
+        # Literal ARN instead - the role name is deterministic.
         Sid    = "PassEcsRoles"
         Effect = "Allow"
         Action = "iam:PassRole"
@@ -200,7 +207,7 @@ resource "aws_iam_role_policy" "github_actions_deploy_extras" {
           data.aws_iam_role.task_execution_role.arn,
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/ecsInfrastructureRoleForExpressServices",
           data.aws_iam_role.task_role.arn,
-          aws_iam_role.scheduler_invocation.arn
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-scheduler-invocation-role"
         ]
       },
       {
@@ -210,12 +217,23 @@ resource "aws_iam_role_policy" "github_actions_deploy_extras" {
         Resource = "*"
       },
       {
+        # Deliberately a literal ARN, not aws_s3_bucket.frontend.arn - a
+        # real bug found live: referencing the resource attribute makes
+        # this policy structurally depend on the frontend bucket, so any
+        # -target destroy plan that includes the bucket pulls this
+        # protected, prevent_destroy'd resource in too ("Instance cannot
+        # be destroyed" on github_actions_deploy_extras, even though it
+        # was correctly excluded from -target directly) - the exact same
+        # dependency-based circular-inclusion pattern as the OIDC
+        # provider ARN fix elsewhere in this file, just discovered later.
+        # The bucket name is deterministic (project_name +
+        # account_id, both known without needing the resource itself).
         Sid      = "FrontendDeploy"
         Effect   = "Allow"
         Action   = ["s3:PutObject", "s3:ListBucket"]
         Resource = [
-          aws_s3_bucket.frontend.arn,
-          "${aws_s3_bucket.frontend.arn}/*"
+          "arn:aws:s3:::${var.project_name}-frontend-${data.aws_caller_identity.current.account_id}",
+          "arn:aws:s3:::${var.project_name}-frontend-${data.aws_caller_identity.current.account_id}/*"
         ]
       },
       {
