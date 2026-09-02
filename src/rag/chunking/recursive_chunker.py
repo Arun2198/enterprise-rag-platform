@@ -41,34 +41,67 @@ class RecursiveChunker:
                 )
             )
 
-        sections = self._split_sections(document.content)
-        chunks: list[Chunk] = []
+        # Chunk each page independently rather than the flattened
+        # document.content - this is what makes chunk identity stable
+        # under a page-localized edit (see class docstring) and, as a
+        # side effect, means no chunk can ever span two pages: a
+        # sentence split across a page break becomes two separate
+        # chunks instead of one that silently straddles the boundary.
+        # Formats with no native page concept (docx, markdown) get a
+        # single virtual page 1 covering the whole document - identical
+        # output to the old flattened behavior for those formats, just
+        # under the new id scheme.
+        pages = document.pages if document.pages is not None else [document.content]
 
-        for section_title, section_text in sections:
-            for text in self._split_text(section_text):
-                chunks.append(
-                    Chunk(
-                        chunk_id=f"{document.document_id}:{len(chunks)}",
-                        document_id=document.document_id,
-                        chunk_index=len(chunks),
-                        text=text,
-                        source=document.source,
-                        document_type=document.document_type,
-                        owner=document.owner,
-                        created_at=document.created_at,
-                        updated_at=document.updated_at,
-                        parent_section=section_title,
-                        content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                        chunking_version=self.chunking_version,
-                        metadata={
-                            **document.metadata,
-                            "document_id": document.document_id,
-                            "document_type": document.document_type,
-                            "source": document.source,
-                            "section": section_title,
-                        }
+        chunks: list[Chunk] = []
+        global_index = 0
+
+        for page_index, page_text in enumerate(pages):
+            page_number = page_index + 1
+
+            if not page_text.strip():
+                continue
+
+            sections = self._split_sections(page_text)
+            local_index = 0
+
+            for section_title, section_text in sections:
+                for text in self._split_text(section_text):
+                    chunks.append(
+                        Chunk(
+                            chunk_id=f"{document.document_id}:p{page_number}:c{local_index}",
+                            document_id=document.document_id,
+                            chunk_index=global_index,
+                            page_number=page_number,
+                            text=text,
+                            source=document.source,
+                            document_type=document.document_type,
+                            owner=document.owner,
+                            created_at=document.created_at,
+                            updated_at=document.updated_at,
+                            parent_section=section_title,
+                            content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                            chunking_version=self.chunking_version,
+                            metadata={
+                                **document.metadata,
+                                "document_id": document.document_id,
+                                "document_type": document.document_type,
+                                "source": document.source,
+                                "section": section_title,
+                            }
+                        )
                     )
+                    local_index += 1
+                    global_index += 1
+
+        if not chunks:
+            return Result(
+                success=False,
+                error=Error(
+                    code="EMPTY_DOCUMENT",
+                    message="Cannot chunk an empty document"
                 )
+            )
 
         return Result(
             success=True,

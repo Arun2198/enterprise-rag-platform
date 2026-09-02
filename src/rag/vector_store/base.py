@@ -35,6 +35,12 @@ class VectorStore(Protocol):
     ) -> list[SearchResult]:
         ...
 
+    def delete(
+        self,
+        chunk_id: str
+    ) -> None:
+        ...
+
     def delete_by_document(
         self,
         document_id: str

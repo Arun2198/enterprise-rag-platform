@@ -10,6 +10,7 @@ class Chunk(BaseModel):
     document_id: str
     document_version: int = 1
     chunk_index: int
+    page_number: int | None = None
     text: str
     source: str
     document_type: str

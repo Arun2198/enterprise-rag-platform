@@ -2,6 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from pydantic import Field
+from pydantic import model_validator
 
 MAX_QUERY_LENGTH = 2000
 MAX_FILE_PATHS_PER_REQUEST = 50
@@ -9,6 +10,25 @@ MAX_FILE_PATHS_PER_REQUEST = 50
 
 class IngestRequest(BaseModel):
     file_paths: list[str] = Field(min_length=1, max_length=MAX_FILE_PATHS_PER_REQUEST)
+    document_ids: list[str] = Field(
+        min_length=1,
+        description=(
+            "Required stable identity per file_paths entry - same length, "
+            "index-aligned. Mandatory (not derived from the filename) so "
+            "a renamed file is never mistaken for a brand-new document: "
+            "pass the same document_id on every ingest of the same "
+            "logical document, including after a rename."
+        )
+    )
+
+    @model_validator(mode="after")
+    def _document_ids_length_must_match_file_paths(self) -> "IngestRequest":
+        if len(self.document_ids) != len(self.file_paths):
+            raise ValueError(
+                "document_ids must have the same length as file_paths "
+                f"({len(self.document_ids)} != {len(self.file_paths)})"
+            )
+        return self
 
 
 class IngestResponse(BaseModel):
@@ -24,6 +44,10 @@ class DocumentDeleteResponse(BaseModel):
 
 class ReindexRequest(BaseModel):
     file_path: str = Field(min_length=1)
+    document_id: str = Field(
+        min_length=1,
+        description="Required stable identity - same meaning as IngestRequest.document_ids."
+    )
 
 
 class DocumentUploadResponse(BaseModel):

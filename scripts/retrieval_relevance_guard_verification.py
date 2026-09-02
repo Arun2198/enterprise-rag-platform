@@ -43,7 +43,7 @@ def run(
     threshold: float
 ) -> None:
     service = RAGService(embedder=embedder)
-    service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"])
+    service.ingest(["sample_documents/AI-RMF-1stdraft.pdf"], document_ids=["AI-RMF-1stdraft"])
     guard = RetrievalRelevanceGuard(embedder=service.embedder, threshold=threshold)
 
     dataset = json.loads(Path("evaluation/golden_dataset.json").read_text(encoding="utf-8"))

@@ -40,6 +40,8 @@ class Settings:
     s3_jobs_prefix: str = "jobs/"
     mlops_backup_s3_prefix: str = "mlops_backups/"
     conversations_s3_prefix: str = "conversations/"
+    incremental_ingestion_enabled: bool = True
+    ingestion_manifests_s3_prefix: str = "ingestion_manifests/"
     sqs_queue_url: str | None = None
     sqs_poll_interval_seconds: float = 20.0
     scheduler_queue_url: str | None = None
@@ -74,6 +76,7 @@ class Settings:
     groundedness_threshold: float = 0.60
     retrieval_relevance_guard_enabled: bool = False
     retrieval_relevance_threshold: float | None = None
+    document_first_answering_enabled: bool = True
     cors_allowed_origins: tuple[str, ...] = ()
     rate_limit_enabled: bool = True
     rate_limit_requests_per_minute: int = 120
@@ -139,6 +142,8 @@ def load_settings() -> Settings:
         s3_max_file_size_mb=int(os.getenv("S3_MAX_FILE_SIZE_MB", "25")),
         s3_jobs_prefix=os.getenv("S3_JOBS_PREFIX", "jobs/"),
         conversations_s3_prefix=os.getenv("CONVERSATIONS_S3_PREFIX", "conversations/"),
+        incremental_ingestion_enabled=_parse_bool(os.getenv("INCREMENTAL_INGESTION_ENABLED", "true")),
+        ingestion_manifests_s3_prefix=os.getenv("INGESTION_MANIFESTS_S3_PREFIX", "ingestion_manifests/"),
         sqs_queue_url=os.getenv("SQS_QUEUE_URL"),
         sqs_poll_interval_seconds=float(os.getenv("SQS_POLL_INTERVAL_SECONDS", "20")),
         scheduler_queue_url=os.getenv("SCHEDULER_QUEUE_URL"),
@@ -194,6 +199,9 @@ def load_settings() -> Settings:
             float(_retrieval_relevance_threshold_raw)
             if (_retrieval_relevance_threshold_raw := os.getenv("RETRIEVAL_RELEVANCE_THRESHOLD"))
             else None
+        ),
+        document_first_answering_enabled=_parse_bool(
+            os.getenv("DOCUMENT_FIRST_ANSWERING_ENABLED", "true")
         ),
         cors_allowed_origins=(
             tuple(origin.strip() for origin in _cors_origins_raw.split(","))

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
 from datetime import timezone
+from pathlib import Path
 from typing import Any
 
 from evaluation.generation_metrics import AnswerRelevanceMetric
@@ -133,7 +134,13 @@ class BenchmarkRunner:
         ingestion_pipeline = IngestionPipeline()
 
         for file_path in self.dataset.source_documents:
-            document_result = ingestion_pipeline.ingest_file(file_path)
+            # Preserves the same document_id a bare filename-derived
+            # ingest would have produced (Path(file_path).stem) - golden
+            # datasets' relevant_chunk_ids are built against that exact
+            # id, so this must stay stable even though document_id is
+            # now a mandatory, explicit argument rather than an implicit
+            # default.
+            document_result = ingestion_pipeline.ingest_file(file_path, document_id=Path(file_path).stem)
 
             if not document_result.success or document_result.data is None:
                 raise ValueError(

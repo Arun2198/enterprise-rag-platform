@@ -1,5 +1,6 @@
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -9,7 +10,9 @@ from app.schemas import CitationResponse
 from app.schemas import IngestResponse
 from app.schemas import Source
 from ingestion.contracts.document import Document
+from ingestion.incremental_indexer import IncrementalIndexer
 from ingestion.ingestion_pipeline import IngestionPipeline
+from ingestion.manifest_store import ManifestStore
 from mlops.feature_flags import FeatureFlagManager
 from rag.chunking.recursive_chunker import RecursiveChunker
 from rag.embeddings.base import Embedder
@@ -58,7 +61,8 @@ class RAGService:
         dense_top_k: int = 20,
         bm25_top_k: int = 20,
         rrf_k: int = 60,
-        abstention_enabled: bool = True
+        abstention_enabled: bool = True,
+        manifest_store: ManifestStore | None = None
     ) -> None:
         self.abstention_enabled = abstention_enabled
         self.ingest_allowed_dir = (
@@ -67,7 +71,14 @@ class RAGService:
         self.ingestion_pipeline = ingestion_pipeline or IngestionPipeline()
         self.chunker = chunker or RecursiveChunker()
         self.embedder = embedder or HashingEmbedder()
-        self.vector_store = vector_store or InMemoryVectorStore()
+        # `or` would be wrong here: InMemoryVectorStore defines __len__,
+        # so a caller-supplied but still-empty store is falsy and `or`
+        # would silently discard it in favor of a brand-new one - found
+        # via a real test that passed an empty store in and then
+        # asserted against that exact reference. An explicit None check
+        # is the only correct way to default an object that can be
+        # "present but empty".
+        self.vector_store = vector_store if vector_store is not None else InMemoryVectorStore()
         self.answerer = answerer or ExtractiveAnswerer()
         self.reranker = reranker
         self.candidate_multiplier = candidate_multiplier
@@ -91,16 +102,54 @@ class RAGService:
             bm25_top_k=bm25_top_k,
             rrf_k=rrf_k
         )
+        # None (the default for direct construction - tests/scripts/
+        # main.py's demo run) keeps index_document()'s old behavior
+        # completely unchanged: full delete-free re-chunk + re-embed +
+        # add_many of every chunk, every call. service_factory wires a
+        # real ManifestStore in for the live app, which is what actually
+        # turns on incremental page/chunk-level re-embedding - see
+        # IncrementalIndexer.
+        self.manifest_store = manifest_store
+        self.incremental_indexer = (
+            IncrementalIndexer(
+                chunker=self.chunker,
+                embedder=self.embedder,
+                vector_store=self.vector_store,
+                manifest_store=self.manifest_store
+            )
+            if self.manifest_store is not None else None
+        )
 
     def ingest(
         self,
-        file_paths: list[str]
+        file_paths: list[str],
+        document_ids: Sequence[str]
     ) -> IngestResponse:
+        """
+        document_ids is mandatory and must be the same length as
+        file_paths - entry i is the real stable identity for
+        file_paths[i]. There is no filename-derived fallback: every
+        caller must track and supply its own document_id, on every
+        ingest of the same document (including after a rename), so a
+        rename is never mistaken for a brand-new document and
+        incremental re-embedding (IncrementalIndexer, which diffs purely
+        on document_id) keeps working across one.
+        """
         indexed_documents = 0
         indexed_chunks = 0
         errors = []
 
-        for file_path in file_paths:
+        if len(document_ids) != len(file_paths):
+            return IngestResponse(
+                indexed_documents=0,
+                indexed_chunks=0,
+                errors=[
+                    "DOCUMENT_IDS_LENGTH_MISMATCH document_ids must have the same "
+                    "length as file_paths"
+                ]
+            )
+
+        for index, file_path in enumerate(file_paths):
             if not self._is_path_allowed(file_path):
                 errors.append(
                     f"{file_path}: PATH_NOT_ALLOWED file path is outside the allowed "
@@ -108,7 +157,7 @@ class RAGService:
                 )
                 continue
 
-            document_result = self.ingestion_pipeline.ingest_file(file_path)
+            document_result = self.ingestion_pipeline.ingest_file(file_path, document_id=document_ids[index])
 
             if not document_result.success or document_result.data is None:
                 errors.append(self._format_error(file_path, document_result.error))
@@ -140,7 +189,17 @@ class RAGService:
         IngestionPipeline.ingest_from_s3() itself and only needs this half
         of the pipeline. Returns the chunk count indexed, or None if
         chunking failed.
+
+        When a manifest_store is configured, delegates to
+        IncrementalIndexer, which embeds and upserts only pages/chunks
+        whose content actually changed since the last ingest of this
+        document_id (and deletes chunks for pages/content that no longer
+        exist) instead of re-embedding everything unconditionally.
         """
+        if self.incremental_indexer is not None:
+            result = self.incremental_indexer.index(document)
+            return result.indexed_chunk_count if result is not None else None
+
         chunk_result = self.chunker.chunk(document)
 
         if not chunk_result.success or chunk_result.data is None:
@@ -170,20 +229,45 @@ class RAGService:
         lifecycle (upload/update/delete/reindex) needs a real delete path,
         not just the vector-store-level primitive. Returns how many
         chunks were removed (0 if the document_id had none indexed).
+
+        Also clears the document's manifest (when incremental indexing is
+        on) - otherwise a later re-upload of the same document_id would
+        see a stale manifest claiming chunks are already indexed and
+        skip re-embedding content that was just deleted.
         """
-        return self.vector_store.delete_by_document(document_id)
+        deleted = self.vector_store.delete_by_document(document_id)
+
+        if self.manifest_store is not None:
+            self.manifest_store.delete(document_id)
+
+        return deleted
 
     def reindex_document(
         self,
-        file_path: str
+        file_path: str,
+        document_id: str
     ) -> IngestResponse:
         """
-        Delete-then-reingest for a document that changed - not a partial
-        update, a full replace, since chunk boundaries/count can shift
-        with any content change and stale chunks from the old version
-        must not survive alongside the new ones.
+        Delete-then-reingest for a document that changed, when incremental
+        indexing isn't on (manifest_store=None) - not a partial update, a
+        full replace, since chunk boundaries/count can shift with any
+        content change and stale chunks from the old version must not
+        survive alongside the new ones.
+
+        When a manifest_store is configured, skips the explicit delete:
+        index_document()'s IncrementalIndexer path already does the
+        correct diff-based delete of stale chunks (and upsert of
+        changed/new ones) using deterministic page/chunk-scoped ids, so
+        deleting everything first would only throw away the manifest
+        history that makes the diff possible and force a full re-embed -
+        exactly the behavior this whole feature exists to avoid.
+
+        document_id is mandatory, same as ingest() - no filename-derived
+        fallback, so the caller must supply the file's real stable
+        identity, including after a rename, for this to be recognized as
+        the same document rather than a new one.
         """
-        document_result = self.ingestion_pipeline.ingest_file(file_path)
+        document_result = self.ingestion_pipeline.ingest_file(file_path, document_id=document_id)
 
         if not document_result.success or document_result.data is None:
             return IngestResponse(
@@ -192,7 +276,9 @@ class RAGService:
                 errors=[self._format_error(file_path, document_result.error)]
             )
 
-        self.delete_document(document_result.data.document_id)
+        if self.incremental_indexer is None:
+            self.delete_document(document_result.data.document_id)
+
         chunk_count = self.index_document(document_result.data)
 
         if chunk_count is None:

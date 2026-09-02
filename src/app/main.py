@@ -468,7 +468,7 @@ if FastAPI is not None:
                 detail=f"service unavailable: {startup_error}"
             )
 
-        return rag_service.ingest(request.file_paths)
+        return rag_service.ingest(request.file_paths, document_ids=request.document_ids)
 
     @app.delete("/documents/{document_id}", response_model=DocumentDeleteResponse)
     def delete_document(
@@ -495,7 +495,7 @@ if FastAPI is not None:
                 detail=f"service unavailable: {startup_error}"
             )
 
-        return rag_service.reindex_document(request.file_path)
+        return rag_service.reindex_document(request.file_path, document_id=request.document_id)
 
     @app.post("/documents", response_model=DocumentUploadResponse)
     async def upload_document(

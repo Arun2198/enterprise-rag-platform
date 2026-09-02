@@ -26,6 +26,19 @@ class Document(BaseModel):
         description="Normalized document content"
     )
 
+    pages: list[str] | None = Field(
+        default=None,
+        description=(
+            "Per-page text, 1-indexed by list position (pages[0] is page "
+            "1), for formats with a real page concept. A page with no "
+            "extractable text is an empty string, not a missing entry - "
+            "the list stays aligned with real page numbers. None for "
+            "formats with no native pagination (docx, markdown) - "
+            "chunking treats the whole document as a single virtual "
+            "page 1 in that case."
+        )
+    )
+
     owner: str | None = Field(
         default=None,
         description="Document owner"

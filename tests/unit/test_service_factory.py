@@ -42,7 +42,7 @@ def test_build_rag_service_blocks_a_path_outside_the_default_allowed_dir(tmp_pat
     outside_file.write_text("# Secret\nNot inside sample_documents.", encoding="utf-8")
     service = build_rag_service(Settings())
 
-    response = service.ingest([str(outside_file)])
+    response = service.ingest([str(outside_file)], document_ids=["secret"])
 
     assert response.indexed_documents == 0
     assert "PATH_NOT_ALLOWED" in response.errors[0]
@@ -227,7 +227,8 @@ def test_build_rag_service_wires_openai_compatible_provider(mock_answerer_class)
     settings = Settings(
         generation_provider="openai_compatible",
         llm_base_url="https://example.com/v1",
-        llm_api_key="key"
+        llm_api_key="key",
+        document_first_answering_enabled=False
     )
 
     service = build_rag_service(settings)
@@ -259,7 +260,8 @@ def test_build_rag_service_wires_bedrock_provider(mock_build_client, mock_answer
     settings = Settings(
         generation_provider="bedrock",
         aws_region="us-west-2",
-        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0"
+        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        document_first_answering_enabled=False
     )
 
     service = build_rag_service(settings)
@@ -287,7 +289,8 @@ def test_build_rag_service_wires_fallback_answerer_when_configured(mock_build_cl
         generation_provider="bedrock",
         generation_fallback_provider="extractive",
         aws_region="us-west-2",
-        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0"
+        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        document_first_answering_enabled=False
     )
 
     service = build_rag_service(settings)
@@ -309,6 +312,76 @@ def test_build_rag_service_has_no_fallback_by_default():
     from rag.generation.fallback_answerer import FallbackAnswerer
 
     assert not isinstance(service.answerer, FallbackAnswerer)
+
+
+@patch("app.service_factory.OpenAICompatibleAnswerer")
+def test_build_rag_service_wires_document_first_answering_by_default_for_an_llm_provider(mock_answerer_class):
+
+    from rag.generation.document_first_answerer import DocumentFirstAnswerer
+    from rag.generation.extractive_answerer import ExtractiveAnswerer
+
+    settings = Settings(
+        generation_provider="openai_compatible",
+        llm_base_url="https://example.com/v1",
+        llm_api_key="key"
+    )
+
+    service = build_rag_service(settings)
+
+    assert isinstance(service.answerer, DocumentFirstAnswerer)
+    assert isinstance(service.answerer.document_answerer, ExtractiveAnswerer)
+    assert service.answerer.llm_answerer is mock_answerer_class.return_value
+
+
+def test_build_rag_service_document_first_answering_can_be_disabled():
+
+    settings = Settings(generation_provider="extractive", document_first_answering_enabled=False)
+
+    service = build_rag_service(settings)
+
+    from rag.generation.document_first_answerer import DocumentFirstAnswerer
+
+    assert not isinstance(service.answerer, DocumentFirstAnswerer)
+
+
+def test_build_rag_service_document_first_answering_is_a_no_op_for_extractive_provider():
+    """
+    GENERATION_PROVIDER=extractive is already document-only - there's no
+    LLM answerer to route away to, so DocumentFirstAnswerer would be a
+    pointless wrapper even though the flag defaults to enabled.
+    """
+    from rag.generation.document_first_answerer import DocumentFirstAnswerer
+
+    settings = Settings(generation_provider="extractive")
+
+    service = build_rag_service(settings)
+
+    assert not isinstance(service.answerer, DocumentFirstAnswerer)
+
+
+@patch("app.service_factory.BedrockAnswerer")
+@patch("app.service_factory.build_boto3_client")
+def test_build_rag_service_document_first_answering_wraps_fallback_answerer(mock_build_client, mock_answerer_class):
+    """
+    Document-first routing should sit outside the existing LLM fallback
+    chain, not compete with it: the "fall back to the LLM" branch is
+    whatever FallbackAnswerer was already built (primary + its own
+    fallback), not a replacement for it.
+    """
+    from rag.generation.document_first_answerer import DocumentFirstAnswerer
+    from rag.generation.fallback_answerer import FallbackAnswerer
+
+    settings = Settings(
+        generation_provider="bedrock",
+        generation_fallback_provider="extractive",
+        aws_region="us-west-2",
+        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0"
+    )
+
+    service = build_rag_service(settings)
+
+    assert isinstance(service.answerer, DocumentFirstAnswerer)
+    assert isinstance(service.answerer.llm_answerer, FallbackAnswerer)
 
 
 @patch("app.service_factory.OpenAICompatibleAnswerer")
@@ -888,3 +961,34 @@ def test_build_scheduler_sqs_worker_builds_when_fully_configured():
     assert isinstance(worker, SQSSchedulerWorker)
     assert worker.queue_url == "https://sqs.example/scheduler-queue"
     assert worker.scheduler is manager.scheduler
+
+
+def test_build_rag_service_wires_in_memory_manifest_store_by_default():
+
+    from ingestion.manifest_store import InMemoryManifestStore
+
+    service = build_rag_service(Settings())
+
+    assert isinstance(service.manifest_store, InMemoryManifestStore)
+    assert service.incremental_indexer is not None
+
+
+def test_build_rag_service_has_no_manifest_store_when_incremental_ingestion_disabled():
+
+    service = build_rag_service(Settings(incremental_ingestion_enabled=False))
+
+    assert service.manifest_store is None
+    assert service.incremental_indexer is None
+
+
+@patch("app.service_factory.build_boto3_client")
+def test_build_rag_service_wires_s3_manifest_store_when_s3_bucket_configured(mock_build_client):
+
+    from ingestion.manifest_store import S3ManifestStore
+
+    settings = Settings(s3_bucket="my-bucket", ingestion_manifests_s3_prefix="manifests/")
+    service = build_rag_service(settings)
+
+    assert isinstance(service.manifest_store, S3ManifestStore)
+    assert service.manifest_store.bucket_name == "my-bucket"
+    assert service.manifest_store.prefix == "manifests/"
