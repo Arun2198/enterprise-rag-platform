@@ -390,8 +390,7 @@ def test_position_shift_without_content_change_reuses_the_embedding_instead_of_r
     assert vector_store.count() == 4
 
     manifest = manifest_store.get("doc-j")
-    for chunk_id, entry in manifest.chunks.items():
-        assert entry.status == ChunkStatus.SUCCESS
+    assert all(entry.status == ChunkStatus.SUCCESS for entry in manifest.chunks.values())
 
 
 # chunk_version: increments only when a chunk's own content actually
