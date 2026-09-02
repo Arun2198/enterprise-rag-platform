@@ -163,7 +163,7 @@ With the API running, in another terminal:
 ```bash
 curl -X POST http://localhost:8000/ingest \
   -H "Content-Type: application/json" \
-  -d '{"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"]}'
+  -d '{"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"], "document_ids": ["AI-RMF-1stdraft"]}'
 
 curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \

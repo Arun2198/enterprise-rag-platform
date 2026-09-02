@@ -307,7 +307,7 @@ jobs:
           ingest_response=$(curl -s -X POST "$alb_url/ingest" \
             -H "Authorization: Bearer $token" \
             -H "Content-Type: application/json" \
-            -d '{"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"]}')
+            -d '{"file_paths": ["sample_documents/AI-RMF-1stdraft.pdf"], "document_ids": ["AI-RMF-1stdraft"]}')
           echo "$ingest_response"
 
           indexed_chunks=$(echo "$ingest_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('indexed_chunks', 0))")
