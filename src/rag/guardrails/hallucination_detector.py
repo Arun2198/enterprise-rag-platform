@@ -1,11 +1,10 @@
-import re
-
 from rag.embeddings.base import Embedder
 from rag.guardrails.base import Action
 from rag.guardrails.base import GuardrailContext
 from rag.guardrails.base import GuardrailFinding
 from rag.guardrails.base import GuardrailStage
 from rag.guardrails.base import Severity
+from rag.guardrails.groundedness import blended_groundedness_score
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
 
 
@@ -88,63 +87,9 @@ class HallucinationDetector:
             return 0.0
 
         return max(
-            self._groundedness_score(answer, item.chunk.text) for item in retrieved_chunks
+            blended_groundedness_score(
+                answer, item.chunk.text, self.embedder,
+                self.token_overlap_weight, self.similarity_weight
+            )
+            for item in retrieved_chunks
         )
-
-    def _groundedness_score(
-        self,
-        answer: str,
-        context_text: str
-    ) -> float:
-        token_overlap = self._token_overlap(answer, context_text)
-
-        if self.embedder is None or not answer.strip() or not context_text.strip():
-            return token_overlap
-
-        similarity = self._cosine_similarity(
-            self.embedder.embed(answer),
-            self.embedder.embed(context_text)
-        )
-        blended = (
-            self.token_overlap_weight * token_overlap
-            + self.similarity_weight * similarity
-        )
-        return max(0.0, min(blended, 1.0))
-
-    def _token_overlap(
-        self,
-        answer: str,
-        context_text: str
-    ) -> float:
-        answer_terms = self._tokens(answer)
-
-        if not answer_terms:
-            return 0.0
-
-        context_terms = self._tokens(context_text)
-
-        if not context_terms:
-            return 0.0
-
-        overlap = answer_terms.intersection(context_terms)
-        return len(overlap) / len(answer_terms)
-
-    def _tokens(
-        self,
-        text: str
-    ) -> set[str]:
-        return set(re.findall(r"[a-z0-9]+", text.lower()))
-
-    def _cosine_similarity(
-        self,
-        first: list[float],
-        second: list[float]
-    ) -> float:
-        numerator = sum(a * b for a, b in zip(first, second, strict=True))
-        first_norm = sum(a * a for a in first) ** 0.5
-        second_norm = sum(b * b for b in second) ** 0.5
-
-        if first_norm == 0 or second_norm == 0:
-            return 0.0
-
-        return numerator / (first_norm * second_norm)

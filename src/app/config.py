@@ -76,7 +76,18 @@ class Settings:
     groundedness_threshold: float = 0.60
     retrieval_relevance_guard_enabled: bool = False
     retrieval_relevance_threshold: float | None = None
-    document_first_answering_enabled: bool = True
+    # Superseded by grounded_first_enabled below (same idea - answer
+    # from retrieval alone when confident, skip the LLM - but scored
+    # with HallucinationDetector's own groundedness logic instead of
+    # RetrievalRelevanceGuard's query/chunk cosine similarity, and
+    # decided inline in RAGService.ask() rather than via a wrapping
+    # Answerer). Left implemented and off by default rather than
+    # removed - RAGService itself still refuses to run both at once
+    # (see RAGService._answer()'s DocumentFirstAnswerer isinstance
+    # check), so turning this back on doesn't double-gate.
+    document_first_answering_enabled: bool = False
+    grounded_first_enabled: bool = True
+    grounded_first_threshold: float = 0.60
     cors_allowed_origins: tuple[str, ...] = ()
     rate_limit_enabled: bool = True
     rate_limit_requests_per_minute: int = 120
@@ -201,8 +212,12 @@ def load_settings() -> Settings:
             else None
         ),
         document_first_answering_enabled=_parse_bool(
-            os.getenv("DOCUMENT_FIRST_ANSWERING_ENABLED", "true")
+            os.getenv("DOCUMENT_FIRST_ANSWERING_ENABLED", "false")
         ),
+        grounded_first_enabled=_parse_bool(
+            os.getenv("GROUNDED_FIRST_ENABLED", "true")
+        ),
+        grounded_first_threshold=float(os.getenv("GROUNDED_FIRST_THRESHOLD", "0.60")),
         cors_allowed_origins=(
             tuple(origin.strip() for origin in _cors_origins_raw.split(","))
             if (_cors_origins_raw := os.getenv("CORS_ALLOWED_ORIGINS")) else ()

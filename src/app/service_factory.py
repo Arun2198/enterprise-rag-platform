@@ -100,7 +100,9 @@ def build_rag_service(
         bm25_top_k=settings.bm25_top_k,
         rrf_k=settings.rrf_k,
         abstention_enabled=settings.abstention_enabled,
-        manifest_store=_build_manifest_store(settings)
+        manifest_store=_build_manifest_store(settings),
+        grounded_first_enabled=settings.grounded_first_enabled,
+        grounded_first_threshold=settings.grounded_first_threshold
     )
 
 

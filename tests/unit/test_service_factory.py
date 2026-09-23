@@ -315,15 +315,20 @@ def test_build_rag_service_has_no_fallback_by_default():
 
 
 @patch("app.service_factory.OpenAICompatibleAnswerer")
-def test_build_rag_service_wires_document_first_answering_by_default_for_an_llm_provider(mock_answerer_class):
-
+def test_build_rag_service_wires_document_first_answering_when_explicitly_enabled(mock_answerer_class):
+    """
+    Off by default (superseded by grounded_first_enabled - see
+    Settings.document_first_answering_enabled's own docstring) but still
+    fully wired when a caller explicitly opts in.
+    """
     from rag.generation.document_first_answerer import DocumentFirstAnswerer
     from rag.generation.extractive_answerer import ExtractiveAnswerer
 
     settings = Settings(
         generation_provider="openai_compatible",
         llm_base_url="https://example.com/v1",
-        llm_api_key="key"
+        llm_api_key="key",
+        document_first_answering_enabled=True
     )
 
     service = build_rag_service(settings)
@@ -333,9 +338,9 @@ def test_build_rag_service_wires_document_first_answering_by_default_for_an_llm_
     assert service.answerer.llm_answerer is mock_answerer_class.return_value
 
 
-def test_build_rag_service_document_first_answering_can_be_disabled():
+def test_build_rag_service_document_first_answering_is_off_by_default():
 
-    settings = Settings(generation_provider="extractive", document_first_answering_enabled=False)
+    settings = Settings(generation_provider="extractive")
 
     service = build_rag_service(settings)
 
@@ -348,11 +353,11 @@ def test_build_rag_service_document_first_answering_is_a_no_op_for_extractive_pr
     """
     GENERATION_PROVIDER=extractive is already document-only - there's no
     LLM answerer to route away to, so DocumentFirstAnswerer would be a
-    pointless wrapper even though the flag defaults to enabled.
+    pointless wrapper even with the flag explicitly turned on.
     """
     from rag.generation.document_first_answerer import DocumentFirstAnswerer
 
-    settings = Settings(generation_provider="extractive")
+    settings = Settings(generation_provider="extractive", document_first_answering_enabled=True)
 
     service = build_rag_service(settings)
 
@@ -375,13 +380,36 @@ def test_build_rag_service_document_first_answering_wraps_fallback_answerer(mock
         generation_provider="bedrock",
         generation_fallback_provider="extractive",
         aws_region="us-west-2",
-        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0"
+        bedrock_model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        document_first_answering_enabled=True
     )
 
     service = build_rag_service(settings)
 
     assert isinstance(service.answerer, DocumentFirstAnswerer)
     assert isinstance(service.answerer.llm_answerer, FallbackAnswerer)
+
+
+def test_build_rag_service_grounded_first_enabled_by_default():
+
+    service = build_rag_service(Settings())
+
+    assert service.grounded_first_enabled is True
+    assert service.grounded_first_threshold == 0.60
+
+
+def test_build_rag_service_grounded_first_threshold_is_configurable():
+
+    service = build_rag_service(Settings(grounded_first_threshold=0.85))
+
+    assert service.grounded_first_threshold == 0.85
+
+
+def test_build_rag_service_grounded_first_can_be_disabled():
+
+    service = build_rag_service(Settings(grounded_first_enabled=False))
+
+    assert service.grounded_first_enabled is False
 
 
 @patch("app.service_factory.OpenAICompatibleAnswerer")

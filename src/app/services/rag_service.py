@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import time
 import uuid
 from collections.abc import Sequence
@@ -21,9 +22,11 @@ from rag.embeddings.base import Embedder
 from rag.embeddings.hashing_embedder import HashingEmbedder
 from rag.generation.base import Answerer
 from rag.generation.citations import extract_citations
+from rag.generation.document_first_answerer import DocumentFirstAnswerer
 from rag.generation.extractive_answerer import ExtractiveAnswerer
 from rag.generation.prompt import ConversationTurn
 from rag.guardrails.base import Action
+from rag.guardrails.groundedness import blended_groundedness_score
 from rag.guardrails.manager import GuardrailManager
 from rag.retrieval.hybrid_retrieval import HybridRetriever
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
@@ -33,6 +36,8 @@ from rag.retrieval.trace import RetrievalTrace
 from rag.vector_store.base import VectorStore
 from rag.vector_store.in_memory_store import InMemoryVectorStore
 from rag.vector_store.in_memory_store import MetadataFilter
+
+logger = logging.getLogger(__name__)
 
 RERANKER_FLAG_NAME = "cross_encoder_reranker"
 ABSTENTION_MESSAGE = (
@@ -65,7 +70,9 @@ class RAGService:
         bm25_top_k: int = 20,
         rrf_k: int = 60,
         abstention_enabled: bool = True,
-        manifest_store: ManifestStore | None = None
+        manifest_store: ManifestStore | None = None,
+        grounded_first_enabled: bool = True,
+        grounded_first_threshold: float = 0.60
     ) -> None:
         self.abstention_enabled = abstention_enabled
         self.ingest_allowed_dir = (
@@ -83,6 +90,13 @@ class RAGService:
         # "present but empty".
         self.vector_store = vector_store if vector_store is not None else InMemoryVectorStore()
         self.answerer = answerer or ExtractiveAnswerer()
+        self.grounded_first_enabled = grounded_first_enabled
+        self.grounded_first_threshold = grounded_first_threshold
+        # Dedicated instance, always available regardless of what
+        # self.answerer is configured as (an LLM-only provider has no
+        # extractive fallback of its own to reach for) - see
+        # _answer_grounded_first().
+        self._grounded_first_answerer = ExtractiveAnswerer()
         self.reranker = reranker
         self.candidate_multiplier = candidate_multiplier
         self.feature_flags = feature_flags
@@ -320,11 +334,7 @@ class RAGService:
             access_groups=access_groups,
             document_ids=document_ids
         )
-        answer = self.answerer.answer(
-            query=query,
-            retrieved_chunks=self._expand_to_window(retrieved),
-            history=history
-        )
+        answer, _ = self._answer(query, retrieved, history)
 
         output_result = self.guardrail_manager.run_output(
             query=query,
@@ -426,13 +436,9 @@ class RAGService:
         )
 
         generation_started = time.monotonic()
-        answer = self.answerer.answer(
-            query=query,
-            retrieved_chunks=self._expand_to_window(retrieved),
-            history=history
-        )
+        answer, provider_used = self._answer(query, retrieved, history)
         trace.stage_timings_ms["generation"] = (time.monotonic() - generation_started) * 1000
-        trace.generation_provider = type(self.answerer).__name__
+        trace.generation_provider = provider_used
         trace.final_chunk_ids = [item.chunk.chunk_id for item in retrieved]
 
         guardrail_started = time.monotonic()
@@ -658,6 +664,92 @@ class RAGService:
             return int(chunk.chunk_id.rsplit(":", 1)[-1].removeprefix("s"))
         except ValueError:
             return 0
+
+    def _answer(
+        self,
+        query: str,
+        retrieved: list[RetrievedChunk],
+        history: list[ConversationTurn] | None
+    ) -> tuple[str, str]:
+        """
+        Grounded-first answering: decide, before ever calling an LLM,
+        whether the retrieved context alone is confident enough to
+        answer directly - genuinely distinct from FallbackAnswerer,
+        which only reacts to a provider *raising* (a failure), never to
+        answer *quality*. Both can be active at once: this decides
+        whether self.answerer gets called at all; if self.answerer is a
+        FallbackAnswerer, it still handles what happens if that call
+        fails, exactly as before this existed.
+
+        Returns (answer_text, provider_name_used) - the second value is
+        purely for ask_with_trace()'s generation_provider field, so the
+        debug trace reports which answerer actually ran, not just
+        whichever was configured.
+
+        Falls straight through to self.answerer (unchanged from before
+        grounded-first routing existed) when:
+        - grounded_first_enabled is False
+        - nothing was retrieved - no context to be confident about
+        - self.answerer is already ExtractiveAnswerer - already
+          document-only, nothing to route away from
+        - self.answerer is already a DocumentFirstAnswerer - that class
+          already does its own retrieval-confidence routing (a
+          different signal - query/chunk cosine similarity rather than
+          this blended groundedness score); stacking a second gate on
+          top would just double-decide the same question with two
+          different answers possible.
+        """
+        expanded = self._expand_to_window(retrieved)
+
+        if (
+            not self.grounded_first_enabled
+            or not retrieved
+            or isinstance(self.answerer, ExtractiveAnswerer)
+            or isinstance(self.answerer, DocumentFirstAnswerer)
+        ):
+            answer = self.answerer.answer(query=query, retrieved_chunks=expanded, history=history)
+            return answer, type(self.answerer).__name__
+
+        confidence = self._retrieval_confidence(query, expanded)
+        route_to_extractive = confidence >= self.grounded_first_threshold
+
+        logger.info(
+            "grounded_first_routed",
+            extra={
+                "route": "extractive" if route_to_extractive else "llm",
+                "confidence": round(confidence, 4),
+                "threshold": self.grounded_first_threshold
+            }
+        )
+
+        if route_to_extractive:
+            answer = self._grounded_first_answerer.answer(query=query, retrieved_chunks=expanded, history=history)
+            return answer, type(self._grounded_first_answerer).__name__
+
+        answer = self.answerer.answer(query=query, retrieved_chunks=expanded, history=history)
+        return answer, type(self.answerer).__name__
+
+    def _retrieval_confidence(
+        self,
+        query: str,
+        retrieved: list[RetrievedChunk]
+    ) -> float:
+        """
+        Reuses HallucinationDetector's own blended groundedness scoring
+        (token overlap blended with embedding cosine similarity, when
+        an embedder is available) - applied to (query, chunk text)
+        instead of (answer, chunk text). Same underlying question ("how
+        well does this text cover that text"), just asked before
+        generation rather than after. Max over individual chunks, not
+        concatenated, for the same reason HallucinationDetector scores
+        that way - a larger top_k pulling in more tangential chunks
+        shouldn't be able to drag a genuinely well-covered query's
+        score down.
+        """
+        return max(
+            blended_groundedness_score(query, item.chunk.text, self.embedder)
+            for item in retrieved
+        )
 
     def _document_scope_filter(
         self,

@@ -3,6 +3,7 @@ from app.services.rag_service import RAGService
 from mlops.feature_flags import FeatureFlagManager
 from rag.chunking.chunk import Chunk
 from rag.chunking.recursive_chunker import RecursiveChunker
+from rag.generation.extractive_answerer import ExtractiveAnswerer
 from rag.guardrails.base import Action
 from rag.guardrails.manager import GuardrailResult
 from rag.retrieval.hybrid_retrieval import RetrievedChunk
@@ -1187,3 +1188,128 @@ def test_ask_without_document_ids_searches_the_whole_corpus_unchanged():
     service.ask("query", top_k=5)
 
     assert service.retriever.calls == [5]  # unchanged from before document scoping existed
+
+
+class _CountingLLMAnswerer:
+    """Records whether/how often it was actually called - the whole
+    point of grounded-first routing is that a high-confidence retrieval
+    never reaches this at all."""
+
+    def __init__(self, response="llm generated answer"):
+        self.response = response
+        self.calls = 0
+
+    def answer(self, query, retrieved_chunks, history=None):
+        self.calls += 1
+        return self.response
+
+
+def test_grounded_first_high_confidence_skips_the_llm_entirely(tmp_path):
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    llm_answerer = _CountingLLMAnswerer()
+    # threshold at 0 guarantees the extractive branch wins regardless of
+    # the embedder's exact score - deterministic, no dependency on
+    # HashingEmbedder's hash-collision behavior
+    service = RAGService(answerer=llm_answerer, hallucination_guard_enabled=False, grounded_first_threshold=0.0)
+    service.ingest([str(file_path)], document_ids=["policy"])
+
+    response = service.ask("How many leave days do contractors receive?", top_k=1)
+
+    assert llm_answerer.calls == 0
+    assert "10 days" in response.answer
+
+
+def test_grounded_first_low_confidence_invokes_the_llm(tmp_path):
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    llm_answerer = _CountingLLMAnswerer()
+    # threshold above 1.0 (the score's own max) guarantees the LLM
+    # branch wins regardless of the embedder's exact score
+    service = RAGService(answerer=llm_answerer, hallucination_guard_enabled=False, grounded_first_threshold=1.01)
+    service.ingest([str(file_path)], document_ids=["policy"])
+
+    response = service.ask("How many leave days do contractors receive?", top_k=1)
+
+    assert llm_answerer.calls == 1
+    assert response.answer == "llm generated answer"
+
+
+def test_grounded_first_low_confidence_scenario_with_a_genuinely_unrelated_query(tmp_path):
+    """
+    Same as above but with the real signal doing the work, not a forced
+    threshold - a query with essentially no vocabulary or topical
+    overlap with the indexed content should score below the default
+    threshold and fall through to the LLM.
+    """
+    file_path = tmp_path / "policy.md"
+    file_path.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    llm_answerer = _CountingLLMAnswerer()
+    service = RAGService(answerer=llm_answerer, hallucination_guard_enabled=False)
+    service.ingest([str(file_path)], document_ids=["policy"])
+
+    service.ask("What is the boiling point of mercury at sea level?", top_k=1)
+
+    assert llm_answerer.calls == 1
+
+
+def test_grounded_first_is_skipped_when_disabled():
+    file_path_text = "Contractors receive 10 days of leave per year."
+    llm_answerer = _CountingLLMAnswerer()
+    service = RAGService(
+        answerer=llm_answerer, hallucination_guard_enabled=False,
+        grounded_first_enabled=False, grounded_first_threshold=0.0
+    )
+    chunk = _chunk_with_access("doc:0", file_path_text)
+    service.vector_store.add(chunk, service.embedder.embed(chunk.text))
+
+    service.ask("How many leave days do contractors receive?", top_k=1)
+
+    # disabled means always self.answerer, even though threshold=0.0
+    # would otherwise force the extractive branch
+    assert llm_answerer.calls == 1
+
+
+def test_grounded_first_is_a_no_op_when_answerer_is_already_extractive():
+    """
+    Bare RAGService() defaults to ExtractiveAnswerer - grounded-first
+    routing between "extractive" and "self.answerer" would be
+    pointless when they're the same thing, so it's skipped entirely
+    rather than wastefully computing a confidence score every call.
+    """
+    service = RAGService(grounded_first_threshold=1.01)  # would force the "llm" branch if it ran
+    chunk = _chunk_with_access("doc:0", "Contractors receive 10 days of leave per year.")
+    service.vector_store.add(chunk, service.embedder.embed(chunk.text))
+
+    response = service.ask("How many leave days do contractors receive?", top_k=1)
+
+    assert "10 days" in response.answer  # extractive answer either way
+
+
+def test_grounded_first_defers_to_document_first_answerers_own_routing():
+    """
+    DocumentFirstAnswerer already does its own retrieval-confidence
+    routing with a different signal - RAGService must not stack a
+    second gate on top of it (see _answer()'s isinstance check).
+    """
+    from rag.generation.document_first_answerer import DocumentFirstAnswerer
+
+    llm_answerer = _CountingLLMAnswerer()
+    wrapped = DocumentFirstAnswerer(
+        document_answerer=ExtractiveAnswerer(),
+        llm_answerer=llm_answerer,
+        embedder=_MarkerEmbedder(),
+        threshold=0.5
+    )
+    service = RAGService(
+        answerer=wrapped, embedder=_MarkerEmbedder(),
+        hallucination_guard_enabled=False, grounded_first_threshold=0.0
+    )
+    chunk = _chunk_with_access("doc:0", "MARKER Contractors receive 10 days of leave per year.")
+    service.vector_store.add(chunk, service.embedder.embed(chunk.text))
+
+    # query has no MARKER - DocumentFirstAnswerer's own signal should
+    # route this to its wrapped llm_answerer, not to plain extraction
+    service.ask("completely unrelated topic", top_k=1)
+
+    assert llm_answerer.calls == 1
