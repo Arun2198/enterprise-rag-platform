@@ -174,6 +174,43 @@ def test_add_many_raises_bulk_index_error_on_partial_failure():
         store.add_many([(_chunk(), [0.1, 0.2])])
 
 
+def test_search_metadata_filter_with_a_list_value_uses_a_terms_query():
+    """
+    A list value means "any of these" (document-scoped search with
+    multiple document_ids) - OpenSearch's terms query, not term (which
+    only matches a single exact value). Nested inside the k-NN query's
+    own filter clause, so OpenSearch applies it before ranking the k
+    nearest neighbors, not as a post-hoc filter on already-ranked hits.
+    """
+    client = FakeOpenSearchClient()
+    store = OpenSearchVectorStore(client=client, index_name="chunks")
+
+    store.search([0.1, 0.2], metadata_filter={"document_id": ["doc-a", "doc-b"]})
+
+    knn_filter = client.search_calls[0]["body"]["query"]["knn"]["embedding"]["filter"]
+    assert {"terms": {"metadata.document_id": ["doc-a", "doc-b"]}} in knn_filter["bool"]["filter"]
+
+
+def test_search_metadata_filter_with_a_single_string_uses_a_term_query():
+    client = FakeOpenSearchClient()
+    store = OpenSearchVectorStore(client=client, index_name="chunks")
+
+    store.search([0.1, 0.2], metadata_filter={"document_id": "doc-a"})
+
+    knn_filter = client.search_calls[0]["body"]["query"]["knn"]["embedding"]["filter"]
+    assert {"term": {"metadata.document_id": "doc-a"}} in knn_filter["bool"]["filter"]
+
+
+def test_search_lexical_metadata_filter_with_a_list_value_uses_a_terms_query():
+    client = FakeOpenSearchClient()
+    store = OpenSearchVectorStore(client=client, index_name="chunks")
+
+    store.search_lexical("contractors leave", metadata_filter={"document_id": ["doc-a", "doc-b"]})
+
+    query_filter = client.search_calls[0]["body"]["query"]["bool"]["filter"]
+    assert {"terms": {"metadata.document_id": ["doc-a", "doc-b"]}} in query_filter
+
+
 def test_search_lexical_runs_a_real_match_query():
 
     client = FakeOpenSearchClient()

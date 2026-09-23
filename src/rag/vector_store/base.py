@@ -1,6 +1,7 @@
 from typing import Protocol
 
 from rag.chunking.chunk import Chunk
+from rag.vector_store.in_memory_store import MetadataFilter
 from rag.vector_store.in_memory_store import SearchResult
 
 
@@ -23,7 +24,7 @@ class VectorStore(Protocol):
         self,
         query_embedding: list[float],
         top_k: int = 5,
-        metadata_filter: dict[str, str] | None = None
+        metadata_filter: MetadataFilter | None = None
     ) -> list[SearchResult]:
         ...
 
@@ -31,7 +32,7 @@ class VectorStore(Protocol):
         self,
         query_text: str,
         top_k: int = 5,
-        metadata_filter: dict[str, str] | None = None
+        metadata_filter: MetadataFilter | None = None
     ) -> list[SearchResult]:
         ...
 

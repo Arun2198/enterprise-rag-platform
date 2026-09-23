@@ -83,6 +83,16 @@ class AskRequest(BaseModel):
             "with no history."
         )
     )
+    document_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional - scope retrieval to just these document_ids instead of "
+            "the whole indexed corpus. Applied inside the search itself, before "
+            "ranking, so scoping doesn't waste the top_k budget on chunks from "
+            "excluded documents. Omit to search the whole corpus, unchanged from "
+            "before this existed."
+        )
+    )
 
 
 class Source(BaseModel):

@@ -1133,3 +1133,57 @@ def test_ask_generation_receives_the_expanded_window_but_sources_stay_precise(tm
     assert "Alpha sentence" in captured["chunks"][0].chunk.text  # generator saw the expanded window
     assert "Contractors receive 10 days" in captured["chunks"][0].chunk.text
     assert response.sources[0].text == "Contractors receive 10 days of leave per year."  # source stays precise
+
+
+def test_ask_document_ids_scopes_retrieval_to_only_those_documents(tmp_path):
+    file_a = tmp_path / "doc_a.md"
+    file_a.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    file_b = tmp_path / "doc_b.md"
+    file_b.write_text("Employees get a completely unrelated benefits package.", encoding="utf-8")
+    service = RAGService()
+    service.ingest([str(file_a), str(file_b)], document_ids=["doc-a", "doc-b"])
+
+    response = service.ask("How many leave days do contractors receive?", document_ids=["doc-a"])
+
+    assert response.sources
+    assert all(source.document_id == "doc-a" for source in response.sources)
+
+
+def test_ask_document_ids_excludes_a_document_even_when_it_would_otherwise_rank_higher(tmp_path):
+    """
+    The real point of scoping: with dense_top_k/bm25_top_k=1, only a
+    single candidate survives the vector store's own search before RRF
+    fusion even runs. Unscoped, the stronger match wins that one slot
+    and the weaker document never surfaces at all. Scoping to the
+    weaker document must still surface it - proving the filter narrows
+    the candidate set before ranking, not after (a post-hoc filter
+    would come back empty here, since the single search slot would
+    already have been claimed by the excluded document).
+    """
+    file_a = tmp_path / "doc_a.md"
+    file_a.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    file_b = tmp_path / "doc_b.md"
+    file_b.write_text("Contractors receive 10 days of leave per year too, mentioned in passing.", encoding="utf-8")
+    service = RAGService(dense_top_k=1, bm25_top_k=1)
+    service.ingest([str(file_a), str(file_b)], document_ids=["doc-a", "doc-b"])
+
+    unscoped = service.ask("How many leave days do contractors receive?", top_k=1)
+    assert len(unscoped.sources) == 1
+    winner = unscoped.sources[0].document_id
+    loser = "doc-b" if winner == "doc-a" else "doc-a"
+
+    scoped = service.ask(
+        "How many leave days do contractors receive?", top_k=1, document_ids=[loser]
+    )
+
+    assert scoped.sources
+    assert scoped.sources[0].document_id == loser
+
+
+def test_ask_without_document_ids_searches_the_whole_corpus_unchanged():
+    service = RAGService()
+    service.retriever = _StubRetriever()
+
+    service.ask("query", top_k=5)
+
+    assert service.retriever.calls == [5]  # unchanged from before document scoping existed

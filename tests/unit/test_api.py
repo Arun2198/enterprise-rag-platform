@@ -124,6 +124,31 @@ def test_ingest_and_ask_endpoints(tmp_path, monkeypatch):
     assert ask_response.json()["citations"] == []
 
 
+def test_ask_document_ids_scopes_retrieval_through_the_api(tmp_path, monkeypatch):
+
+    monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())
+
+    file_a = tmp_path / "doc_a.md"
+    file_a.write_text("Contractors receive 10 days of leave per year.", encoding="utf-8")
+    file_b = tmp_path / "doc_b.md"
+    file_b.write_text("Employees get a completely unrelated benefits package.", encoding="utf-8")
+    client = TestClient(app)
+    client.post(
+        "/ingest",
+        json={"file_paths": [str(file_a), str(file_b)], "document_ids": ["doc-a", "doc-b"]}
+    )
+
+    response = client.post(
+        "/ask",
+        json={"query": "How many leave days do contractors receive?", "document_ids": ["doc-a"]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sources"]
+    assert all(source["document_id"] == "doc-a" for source in body["sources"])
+
+
 def test_ask_accepts_optional_client_id(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rag_service, "ingest_allowed_dir", Path(tmp_path).resolve())

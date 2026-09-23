@@ -6,6 +6,7 @@ from rag.embeddings.base import Embedder
 from rag.retrieval.trace import CandidateTrace
 from rag.retrieval.trace import RetrievalTrace
 from rag.vector_store.base import VectorStore
+from rag.vector_store.in_memory_store import MetadataFilter
 from rag.vector_store.in_memory_store import SearchResult
 
 
@@ -48,7 +49,7 @@ class HybridRetriever:
         self,
         query: str,
         top_k: int = 5,
-        metadata_filter: dict[str, str] | None = None
+        metadata_filter: MetadataFilter | None = None
     ) -> list[RetrievedChunk]:
         query_embedding = self.embedder.embed(query)
         dense_results = self.vector_store.search(
@@ -68,7 +69,7 @@ class HybridRetriever:
         self,
         query: str,
         top_k: int = 5,
-        metadata_filter: dict[str, str] | None = None
+        metadata_filter: MetadataFilter | None = None
     ) -> tuple[list[RetrievedChunk], RetrievalTrace]:
         """
         Same retrieval as retrieve(), but also records the raw dense and

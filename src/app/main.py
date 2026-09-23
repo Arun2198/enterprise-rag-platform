@@ -634,7 +634,8 @@ if FastAPI is not None:
             # body - a caller cannot claim arbitrary access groups for
             # themselves.
             access_groups=user.claims.get("access_groups"),
-            history=history
+            history=history,
+            document_ids=request.document_ids
         )
 
         if request.conversation_id is not None and conversation_store is not None:
@@ -681,7 +682,8 @@ if FastAPI is not None:
             query=request.query,
             top_k=request.top_k,
             client_id=request.client_id,
-            access_groups=user.claims.get("access_groups")
+            access_groups=user.claims.get("access_groups"),
+            document_ids=request.document_ids
         )
         return AskDebugResponse(
             response=response,

@@ -32,6 +32,7 @@ from rag.retrieval.trace import CandidateTrace
 from rag.retrieval.trace import RetrievalTrace
 from rag.vector_store.base import VectorStore
 from rag.vector_store.in_memory_store import InMemoryVectorStore
+from rag.vector_store.in_memory_store import MetadataFilter
 
 RERANKER_FLAG_NAME = "cross_encoder_reranker"
 ABSTENTION_MESSAGE = (
@@ -298,7 +299,8 @@ class RAGService:
         top_k: int = 5,
         client_id: str | None = None,
         access_groups: list[str] | None = None,
-        history: list[ConversationTurn] | None = None
+        history: list[ConversationTurn] | None = None,
+        document_ids: list[str] | None = None
     ) -> AskResponse:
         input_result = self.guardrail_manager.run_input(query)
 
@@ -315,7 +317,8 @@ class RAGService:
             query=query,
             top_k=top_k,
             client_id=client_id,
-            access_groups=access_groups
+            access_groups=access_groups,
+            document_ids=document_ids
         )
         answer = self.answerer.answer(
             query=query,
@@ -388,7 +391,8 @@ class RAGService:
         top_k: int = 5,
         client_id: str | None = None,
         access_groups: list[str] | None = None,
-        history: list[ConversationTurn] | None = None
+        history: list[ConversationTurn] | None = None,
+        document_ids: list[str] | None = None
     ) -> tuple[AskResponse, RetrievalTrace]:
         """
         Same behavior as ask(), plus a full per-stage RetrievalTrace
@@ -417,7 +421,8 @@ class RAGService:
             query=query,
             top_k=top_k,
             client_id=client_id,
-            access_groups=access_groups
+            access_groups=access_groups,
+            document_ids=document_ids
         )
 
         generation_started = time.monotonic()
@@ -491,18 +496,23 @@ class RAGService:
         query: str,
         top_k: int,
         client_id: str | None = None,
-        access_groups: list[str] | None = None
+        access_groups: list[str] | None = None,
+        document_ids: list[str] | None = None
     ) -> tuple[list[RetrievedChunk], RetrievalTrace]:
+        metadata_filter = self._document_scope_filter(document_ids)
+
         if self.reranker is None or not self._reranker_enabled_for(client_id):
             candidates, trace = self.retriever.retrieve_with_trace(
                 query=query,
-                top_k=top_k
+                top_k=top_k,
+                metadata_filter=metadata_filter
             )
             return self._filter_by_access(candidates, access_groups)[:top_k], trace
 
         candidates, trace = self.retriever.retrieve_with_trace(
             query=query,
-            top_k=top_k * self.candidate_multiplier
+            top_k=top_k * self.candidate_multiplier,
+            metadata_filter=metadata_filter
         )
         authorized = self._filter_by_access(candidates, access_groups)
 
@@ -564,18 +574,23 @@ class RAGService:
         query: str,
         top_k: int,
         client_id: str | None = None,
-        access_groups: list[str] | None = None
+        access_groups: list[str] | None = None,
+        document_ids: list[str] | None = None
     ) -> list[RetrievedChunk]:
+        metadata_filter = self._document_scope_filter(document_ids)
+
         if self.reranker is None or not self._reranker_enabled_for(client_id):
             candidates = self.retriever.retrieve(
                 query=query,
-                top_k=top_k
+                top_k=top_k,
+                metadata_filter=metadata_filter
             )
             return self._filter_by_access(candidates, access_groups)[:top_k]
 
         candidates = self.retriever.retrieve(
             query=query,
-            top_k=top_k * self.candidate_multiplier
+            top_k=top_k * self.candidate_multiplier,
+            metadata_filter=metadata_filter
         )
         authorized = self._filter_by_access(candidates, access_groups)
         return self.reranker.rerank(
@@ -643,6 +658,27 @@ class RAGService:
             return int(chunk.chunk_id.rsplit(":", 1)[-1].removeprefix("s"))
         except ValueError:
             return 0
+
+    def _document_scope_filter(
+        self,
+        document_ids: list[str] | None
+    ) -> MetadataFilter | None:
+        """
+        Builds the metadata_filter passed to HybridRetriever.retrieve()
+        when a caller wants a query scoped to specific documents.
+        document_id is already mirrored into every chunk's metadata dict
+        by RecursiveChunker, so this needs no new indexing - both
+        InMemoryVectorStore and OpenSearchVectorStore apply the filter
+        inside the search itself (before ranking), not as a post-hoc
+        filter on already-ranked results, so a scoped query doesn't
+        waste its top_k budget on chunks from excluded documents.
+        None (the default - no document_ids given) means unscoped,
+        unchanged from before this existed.
+        """
+        if not document_ids:
+            return None
+
+        return {"document_id": document_ids}
 
     def _filter_by_access(
         self,

@@ -5,6 +5,18 @@ from rag.chunking.chunk import Chunk
 from rag.retrieval.bm25 import score_bm25
 from rag.retrieval.bm25 import tokenize
 
+# A filter value is either a single exact match or a list meaning "any
+# of these" (an IN filter) - e.g. {"document_id": ["doc-a", "doc-b"]}
+# scopes a query to just those documents. Both this store and
+# OpenSearchVectorStore apply this before ranking, not after, so a
+# document-scoped query doesn't waste its top_k budget on chunks that
+# get filtered out anyway. Defined here (not in base.py) because base.py
+# already imports SearchResult from this module - base.py imports this
+# type from here too, rather than the other way around, to avoid a
+# circular import.
+MetadataFilterValue = str | list[str]
+MetadataFilter = dict[str, MetadataFilterValue]
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -35,7 +47,7 @@ class InMemoryVectorStore:
         self,
         query_embedding: list[float],
         top_k: int = 5,
-        metadata_filter: dict[str, str] | None = None
+        metadata_filter: MetadataFilter | None = None
     ) -> list[SearchResult]:
         results = []
 
@@ -60,7 +72,7 @@ class InMemoryVectorStore:
         self,
         query_text: str,
         top_k: int = 5,
-        metadata_filter: dict[str, str] | None = None
+        metadata_filter: MetadataFilter | None = None
     ) -> list[SearchResult]:
         """
         Real BM25 (see rag.retrieval.bm25) over the current record set,
@@ -154,10 +166,16 @@ class InMemoryVectorStore:
     def _matches_filter(
         self,
         chunk: Chunk,
-        metadata_filter: dict[str, str]
+        metadata_filter: MetadataFilter
     ) -> bool:
+        def matches_one(key: str, value: MetadataFilterValue) -> bool:
+            actual = str(chunk.metadata.get(key))
+            if isinstance(value, list):
+                return actual in {str(v) for v in value}
+            return actual == str(value)
+
         return all(
-            str(chunk.metadata.get(key)) == str(value)
+            matches_one(key, value)
             for key, value in metadata_filter.items()
         )
 

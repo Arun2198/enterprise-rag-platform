@@ -1,6 +1,7 @@
 from typing import Any
 
 from rag.chunking.chunk import Chunk
+from rag.vector_store.in_memory_store import MetadataFilter
 from rag.vector_store.in_memory_store import SearchResult
 
 DEFAULT_SPACE_TYPE = "cosinesimil"
@@ -160,7 +161,7 @@ class OpenSearchVectorStore:
         self,
         query_embedding: list[float],
         top_k: int = 5,
-        metadata_filter: dict[str, str] | None = None
+        metadata_filter: MetadataFilter | None = None
     ) -> list[SearchResult]:
         self._validate_dimensions(query_embedding)
         body = self._search_body(
@@ -178,7 +179,7 @@ class OpenSearchVectorStore:
         self,
         query_text: str,
         top_k: int = 5,
-        metadata_filter: dict[str, str] | None = None
+        metadata_filter: MetadataFilter | None = None
     ) -> list[SearchResult]:
         """
         Real BM25 search via OpenSearch's own match query against the text
@@ -372,10 +373,16 @@ class OpenSearchVectorStore:
 
     def _metadata_filters(
         self,
-        metadata_filter: dict[str, str] | None
+        metadata_filter: MetadataFilter | None
     ) -> list[dict[str, Any]]:
+        # A list value means "any of these" - OpenSearch's terms query,
+        # not term (which only matches a single exact value). Both are
+        # applied inside the k-NN query's own filter clause (see
+        # _search_body) or the bool query's filter clause (search_lexical),
+        # so this narrows the candidate set before ranking, not after.
         return [
-            {"term": {f"metadata.{key}": value}}
+            {"terms": {f"metadata.{key}": value}} if isinstance(value, list)
+            else {"term": {f"metadata.{key}": value}}
             for key, value in (metadata_filter or {}).items()
         ]
 
@@ -383,7 +390,7 @@ class OpenSearchVectorStore:
         self,
         query_embedding: list[float],
         top_k: int,
-        metadata_filter: dict[str, str] | None
+        metadata_filter: MetadataFilter | None
     ) -> dict[str, Any]:
         """
         OpenSearch's k-NN query DSL, not Elasticsearch's - the two diverged
