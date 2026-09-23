@@ -51,7 +51,9 @@ class ReindexRequest(BaseModel):
 
 
 class DocumentUploadResponse(BaseModel):
-    document_id: str
+    document_id: str = Field(
+        description="Echoes the caller-supplied document_id from the upload form - never system-generated."
+    )
     job_id: str
     status: str
 

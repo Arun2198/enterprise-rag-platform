@@ -57,6 +57,7 @@ try:
     from fastapi import Depends
     from fastapi import FastAPI
     from fastapi import File
+    from fastapi import Form
     from fastapi import Header
     from fastapi import HTTPException
     from fastapi import Request
@@ -68,6 +69,7 @@ except ImportError:  # pragma: no cover - keeps core tests runnable pre-API deps
     Depends = None  # type: ignore[assignment]
     FastAPI = None  # type: ignore[assignment,misc]
     File = None  # type: ignore[assignment]
+    Form = None  # type: ignore[assignment]
     Header = None  # type: ignore[assignment]
     HTTPException = None  # type: ignore[assignment,misc]
     Request = None  # type: ignore[assignment,misc]
@@ -500,6 +502,7 @@ if FastAPI is not None:
     @app.post("/documents", response_model=DocumentUploadResponse)
     async def upload_document(
         file: UploadFile = File(...),
+        document_id: str = Form(..., min_length=1),
         user: AuthenticatedUser = Depends(require_permission(Permission.UPLOAD_DOCUMENT))
     ) -> DocumentUploadResponse:
         """
@@ -510,6 +513,13 @@ if FastAPI is not None:
         S3_BUCKET + ASYNC_INGESTION_ENABLED + SQS_QUEUE_URL to all be
         configured; the synchronous /ingest endpoint remains available
         with zero S3/SQS configuration either way.
+
+        document_id is mandatory, same as /ingest and /documents/reindex -
+        no random-uuid fallback. The worker threads it straight through to
+        IngestionPipeline.ingest_from_s3()/RAGService.index_document(), so
+        uploading the same document_id again is what lets IncrementalIndexer
+        recognize it as an update to the same document rather than a new
+        one, and a random id every call would defeat that structurally.
         """
         if s3_document_store is None or ingestion_job_store is None:
             raise HTTPException(
@@ -517,7 +527,6 @@ if FastAPI is not None:
                 detail="asynchronous ingestion is not configured (S3_BUCKET not set)"
             )
 
-        document_id = str(uuid.uuid4())
         job_id = str(uuid.uuid4())
         suffix = os.path.splitext(file.filename or "")[1]
         fd, temp_path = tempfile.mkstemp(suffix=suffix)

@@ -1,11 +1,19 @@
 import json
+import os
+import tempfile
 
+from app.services.rag_service import RAGService
 from ingestion.contracts.document import Document
 from ingestion.contracts.result import Error
 from ingestion.contracts.result import Result
+from ingestion.ingestion_pipeline import IngestionPipeline
+from ingestion.manifest_store import InMemoryManifestStore
 from ingestion.sqs_ingestion_worker import SQSIngestionWorker
 from mlops.ingestion_job_store import IngestionJobStore
 from mlops.ingestion_job_store import JobStatus
+from rag.chunking.recursive_chunker import RecursiveChunker
+from rag.embeddings.hashing_embedder import HashingEmbedder
+from rag.vector_store.in_memory_store import InMemoryVectorStore
 
 
 class _NoSuchKey(Exception):
@@ -199,3 +207,100 @@ def test_poll_once_with_no_messages_returns_zero():
     )
 
     assert worker.poll_once() == 0
+
+
+class _RealContentS3Store:
+    """
+    Backs a real IngestionPipeline with actual file content (unlike
+    _FakeS3Store above, which never gets past a canned Document) - what
+    the two integration tests below need to exercise real parsing +
+    chunking + IncrementalIndexer, not a mocked-out pipeline.
+    """
+
+    def __init__(self, content_by_key: dict[str, str]):
+        self.bucket_name = "my-bucket"
+        self._content_by_key = content_by_key
+        self.processed: list[str] = []
+        self.failed: list[dict] = []
+
+    def download_to_temp(self, key: str) -> str:
+        fd, path = tempfile.mkstemp(suffix=".md")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(self._content_by_key[key])
+        return path
+
+    def mark_processed(self, key):
+        self.processed.append(key)
+
+    def mark_failed(self, key, reason=None):
+        self.failed.append({"key": key, "reason": reason})
+
+
+def _build_real_worker(content_by_key, messages, rag_service=None, job_store=None):
+    rag_service = rag_service or RAGService(
+        embedder=HashingEmbedder(),
+        vector_store=InMemoryVectorStore(),
+        manifest_store=InMemoryManifestStore(),
+        chunker=RecursiveChunker(chunk_size=900, chunk_overlap=50, minimum_chunk_size=10)
+    )
+    job_store = job_store or IngestionJobStore(client=FakeS3JobClient(), bucket_name="jobs-bucket")
+    sqs = FakeSQSClient(messages)
+    s3_store = _RealContentS3Store(content_by_key)
+    worker = SQSIngestionWorker(
+        sqs_client=sqs,
+        queue_url="https://sqs.example/queue",
+        ingestion_pipeline=IngestionPipeline(),
+        s3_store=s3_store,
+        job_store=job_store,
+        rag_service=rag_service
+    )
+    return worker, rag_service, job_store, sqs
+
+
+def test_uploading_the_same_document_id_twice_routes_through_incremental_diff_not_duplicate():
+    content = "# Policy\nContractors receive 10 days of leave per year."
+    worker, rag_service, job_store, sqs = _build_real_worker(
+        content_by_key={"raw/doc-x.md": content},
+        messages=[_sqs_message("job-1", "doc-x", "raw/doc-x.md")]
+    )
+    job_store.create_job("job-1", document_id="doc-x", s3_key="raw/doc-x.md")
+
+    worker.poll_once()
+    count_after_first = rag_service.vector_store.count()
+    assert count_after_first > 0
+
+    # Same document_id, same content, a new upload (new job_id) - the
+    # real-world "re-upload to update" case, not a redelivered duplicate
+    # message (that's the job-level dedup already covered above).
+    sqs._messages = [_sqs_message("job-2", "doc-x", "raw/doc-x.md")]
+    job_store.create_job("job-2", document_id="doc-x", s3_key="raw/doc-x.md")
+
+    worker.poll_once()
+
+    assert rag_service.vector_store.count() == count_after_first  # no duplicate chunks
+    manifest = rag_service.manifest_store.get("doc-x")
+    assert manifest.document_version == 1  # content unchanged - no version bump either
+
+
+def test_uploading_two_different_document_ids_creates_two_separate_documents():
+    worker, rag_service, job_store, sqs = _build_real_worker(
+        content_by_key={
+            "raw/doc-a.md": "# Doc A\nContent that belongs only to document A.",
+            "raw/doc-b.md": "# Doc B\nCompletely different content for document B.",
+        },
+        messages=[_sqs_message("job-1", "doc-a", "raw/doc-a.md")]
+    )
+    job_store.create_job("job-1", document_id="doc-a", s3_key="raw/doc-a.md")
+    worker.poll_once()
+
+    sqs._messages = [_sqs_message("job-2", "doc-b", "raw/doc-b.md")]
+    job_store.create_job("job-2", document_id="doc-b", s3_key="raw/doc-b.md")
+    worker.poll_once()
+
+    doc_ids_in_store = {
+        chunk.document_id
+        for chunk, _ in rag_service.vector_store._records.values()
+    }
+    assert doc_ids_in_store == {"doc-a", "doc-b"}
+    assert rag_service.manifest_store.get("doc-a") is not None
+    assert rag_service.manifest_store.get("doc-b") is not None

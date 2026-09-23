@@ -216,6 +216,9 @@
     <h2>Upload a document</h2>
     <label for="file-input">File (.pdf, .docx, .md, .markdown)</label>
     <input type="file" id="file-input" accept=".pdf,.docx,.md,.markdown">
+    <label for="document-id-input">Document ID</label>
+    <input type="text" id="document-id-input" placeholder="stable id for this document">
+    <div class="status-line">Re-upload the same document with the same ID to update it in place, rather than creating a new one.</div>
     <button id="upload-btn">Upload</button>
     <div id="upload-status" class="status-line"></div>
     <div id="job-controls" class="hidden">
@@ -613,9 +616,15 @@
 
   async function upload() {
     const fileInput = $("file-input");
+    const documentId = $("document-id-input").value.trim();
 
     if (!fileInput.files.length) {
       setStatus($("upload-status"), "Choose a file first.", "err");
+      return;
+    }
+
+    if (!documentId) {
+      setStatus($("upload-status"), "Document ID is required.", "err");
       return;
     }
 
@@ -625,6 +634,7 @@
     try {
       const formData = new FormData();
       formData.append("file", fileInput.files[0]);
+      formData.append("document_id", documentId);
 
       const { response, data } = await authedFetch("/documents", {
         method: "POST",
@@ -673,6 +683,13 @@
   $("new-chat-btn").addEventListener("click", startNewChat);
   $("ask-btn").addEventListener("click", sendMessage);
   $("upload-btn").addEventListener("click", upload);
+  $("file-input").addEventListener("change", () => {
+    const docIdInput = $("document-id-input");
+    const file = $("file-input").files[0];
+    if (file && !docIdInput.value.trim()) {
+      docIdInput.value = file.name.replace(/\.[^.]+$/, "");
+    }
+  });
   $("check-job-btn").addEventListener("click", checkJob);
 
   // Enter-to-submit on the login fields

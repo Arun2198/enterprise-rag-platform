@@ -764,9 +764,29 @@ def test_upload_document_returns_503_when_async_ingestion_not_configured():
 
     client = TestClient(app)
 
-    response = client.post("/documents", files={"file": ("test.md", b"some content", "text/markdown")})
+    response = client.post(
+        "/documents",
+        files={"file": ("test.md", b"some content", "text/markdown")},
+        data={"document_id": "test"}
+    )
 
     assert response.status_code == 503
+
+
+def test_upload_document_requires_document_id(monkeypatch):
+
+    fake_s3 = _FakeS3StoreForUpload()
+    fake_jobs = _FakeJobStoreForUpload()
+    monkeypatch.setattr(main_module, "s3_document_store", fake_s3)
+    monkeypatch.setattr(main_module, "ingestion_job_store", fake_jobs)
+    monkeypatch.setattr(main_module, "sqs_client", None)
+    client = TestClient(app)
+
+    response = client.post("/documents", files={"file": ("test.md", b"some content", "text/markdown")})
+
+    assert response.status_code == 422
+    assert fake_s3.uploaded == []
+    assert fake_jobs.jobs == {}
 
 
 def test_get_job_status_returns_503_when_not_configured():
@@ -817,13 +837,19 @@ def test_upload_document_uploads_to_s3_and_creates_a_job(monkeypatch):
     monkeypatch.setattr(main_module, "sqs_client", None)
     client = TestClient(app)
 
-    response = client.post("/documents", files={"file": ("policy.md", b"some content", "text/markdown")})
+    response = client.post(
+        "/documents",
+        files={"file": ("policy.md", b"some content", "text/markdown")},
+        data={"document_id": "my-stable-id"}
+    )
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "RECEIVED"
+    assert body["document_id"] == "my-stable-id"  # caller-supplied, not a generated uuid
     assert body["job_id"] in fake_jobs.jobs
     assert fake_s3.uploaded[0]["filename"] == "policy.md"
+    assert fake_s3.uploaded[0]["document_id"] == "my-stable-id"
 
 
 def test_upload_document_enqueues_an_sqs_message_when_configured(monkeypatch):
@@ -844,12 +870,17 @@ def test_upload_document_enqueues_an_sqs_message_when_configured(monkeypatch):
     monkeypatch.setattr(main_module, "settings", replace_setting(main_module.settings, "sqs_queue_url", "https://sqs.example/queue"))
     client = TestClient(app)
 
-    response = client.post("/documents", files={"file": ("policy.md", b"some content", "text/markdown")})
+    response = client.post(
+        "/documents",
+        files={"file": ("policy.md", b"some content", "text/markdown")},
+        data={"document_id": "my-stable-id"}
+    )
 
     assert response.status_code == 200
+    assert response.json()["document_id"] == "my-stable-id"
     assert len(fake_sqs.sent) == 1
     body = json.loads(fake_sqs.sent[0]["MessageBody"])
-    assert body["document_id"] == response.json()["document_id"]
+    assert body["document_id"] == "my-stable-id"
 
 
 def test_upload_document_rejects_a_file_over_the_size_limit(monkeypatch):
@@ -860,7 +891,11 @@ def test_upload_document_rejects_a_file_over_the_size_limit(monkeypatch):
     monkeypatch.setattr(main_module, "ingestion_job_store", _FakeJobStoreForUpload())
     client = TestClient(app)
 
-    response = client.post("/documents", files={"file": ("policy.md", b"x" * 100, "text/markdown")})
+    response = client.post(
+        "/documents",
+        files={"file": ("policy.md", b"x" * 100, "text/markdown")},
+        data={"document_id": "policy"}
+    )
 
     assert response.status_code == 413
     assert fake_s3.uploaded == []
@@ -880,7 +915,11 @@ def test_upload_document_rejects_a_disallowed_file_type(monkeypatch):
     monkeypatch.setattr(main_module, "ingestion_job_store", _FakeJobStoreForUpload())
     client = TestClient(app)
 
-    response = client.post("/documents", files={"file": ("malware.exe", b"x", "application/octet-stream")})
+    response = client.post(
+        "/documents",
+        files={"file": ("malware.exe", b"x", "application/octet-stream")},
+        data={"document_id": "malware"}
+    )
 
     assert response.status_code == 422
 
