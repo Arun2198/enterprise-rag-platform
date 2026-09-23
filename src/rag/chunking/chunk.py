@@ -40,6 +40,14 @@ class Chunk(BaseModel):
     updated_at: datetime | None = None
     indexed_at: datetime | None = None
     parent_section: str | None = None
+    # The window (sentence-packed group, same shape the old chunk-level
+    # unit used to be) this sentence was split from - context-expansion
+    # metadata only, same role parent_section already plays. Not part of
+    # identity: chunk_id/content_hash/incremental diffing never look at
+    # this field. Format "{document_id}:p{page}:w{window_index}",
+    # distinct from any real chunk_id (windows are never independently
+    # embedded or stored as their own vector-store record).
+    parent_chunk_id: str | None = None
     content_hash: str | None = None
     chunking_version: str | None = None
     embedding_provider: str | None = None

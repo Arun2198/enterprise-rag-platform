@@ -8,12 +8,24 @@ from rag.chunking.chunk import Chunk
 
 
 class RecursiveChunker:
+    """
+    The retrievable/embeddable unit is a single sentence, not a
+    ~900-char packed group - each Chunk record is one sentence. The old
+    chunk-level grouping (heading-aware sections, greedy sentence
+    packing up to chunk_size, character overlap between adjacent
+    groups) still runs internally as a "window" (_build_windows()) and
+    survives purely as parent_chunk_id metadata on each sentence, so
+    generation-time context expansion can pull a matched sentence's
+    surrounding window back in without the window itself ever being
+    independently embedded or stored as its own vector-store record.
+    """
 
     def __init__(
         self,
         chunk_size: int = 900,
         chunk_overlap: int = 120,
-        minimum_chunk_size: int = 80
+        minimum_chunk_size: int = 80,
+        minimum_sentence_size: int = 20
     ) -> None:
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
@@ -21,12 +33,20 @@ class RecursiveChunker:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.minimum_chunk_size = minimum_chunk_size
-        # Identifies exactly which chunking parameters produced a chunk -
-        # any change to size/overlap/minimum invalidates positional chunk
-        # ids (see evaluation/golden_dataset.json's own documented caveat),
-        # so a chunk carrying the version it was cut under makes that
-        # incompatibility detectable instead of silent.
-        self.chunking_version = f"recursive:{chunk_size}:{chunk_overlap}:{minimum_chunk_size}"
+        # A sentence under this length ("See Section 4.2.") carries
+        # almost no retrievable signal on its own - merged into the
+        # adjacent sentence instead of becoming its own embedded unit.
+        self.minimum_sentence_size = minimum_sentence_size
+        # Identifies exactly which chunking parameters (and which
+        # granularity - "sentence" vs. the old "recursive" chunk-level
+        # scheme) produced a chunk - any change invalidates positional/
+        # content-addressed comparisons against a previous ingest, so a
+        # chunk carrying the version it was cut under makes that
+        # incompatibility detectable (IncrementalIndexer forces a full
+        # re-embed) instead of silently mixing granularities.
+        self.chunking_version = (
+            f"sentence:{chunk_size}:{chunk_overlap}:{minimum_chunk_size}:{minimum_sentence_size}"
+        )
 
     def chunk(
         self,
@@ -63,36 +83,44 @@ class RecursiveChunker:
                 continue
 
             sections = self._split_sections(page_text)
-            local_index = 0
+            sentence_index = 0
+            window_index = 0
 
             for section_title, section_text in sections:
-                for text in self._split_text(section_text):
-                    chunks.append(
-                        Chunk(
-                            chunk_id=f"{document.document_id}:p{page_number}:c{local_index}",
-                            document_id=document.document_id,
-                            chunk_index=global_index,
-                            page_number=page_number,
-                            text=text,
-                            source=document.source,
-                            document_type=document.document_type,
-                            owner=document.owner,
-                            created_at=document.created_at,
-                            updated_at=document.updated_at,
-                            parent_section=section_title,
-                            content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                            chunking_version=self.chunking_version,
-                            metadata={
-                                **document.metadata,
-                                "document_id": document.document_id,
-                                "document_type": document.document_type,
-                                "source": document.source,
-                                "section": section_title,
-                            }
+                for window_text in self._build_windows(section_text):
+                    parent_chunk_id = f"{document.document_id}:p{page_number}:w{window_index}"
+                    sentences = self._merge_tiny_sentences(self._split_sentences(window_text))
+
+                    for sentence_text in sentences:
+                        chunks.append(
+                            Chunk(
+                                chunk_id=f"{document.document_id}:p{page_number}:s{sentence_index}",
+                                document_id=document.document_id,
+                                chunk_index=global_index,
+                                page_number=page_number,
+                                text=sentence_text,
+                                source=document.source,
+                                document_type=document.document_type,
+                                owner=document.owner,
+                                created_at=document.created_at,
+                                updated_at=document.updated_at,
+                                parent_section=section_title,
+                                parent_chunk_id=parent_chunk_id,
+                                content_hash=hashlib.sha256(sentence_text.encode("utf-8")).hexdigest(),
+                                chunking_version=self.chunking_version,
+                                metadata={
+                                    **document.metadata,
+                                    "document_id": document.document_id,
+                                    "document_type": document.document_type,
+                                    "source": document.source,
+                                    "section": section_title,
+                                }
+                            )
                         )
-                    )
-                    local_index += 1
-                    global_index += 1
+                        sentence_index += 1
+                        global_index += 1
+
+                    window_index += 1
 
         if not chunks:
             return Result(
@@ -114,13 +142,15 @@ class RecursiveChunker:
     ) -> list[tuple[str | None, str]]:
         """
         Groups lines into sections on heading boundaries. Only closes a
-        section once it has real body content - a run of consecutive
-        heading-like lines (a table of contents, a stack of repeated
-        running headers) keeps accumulating into the same pending section
-        instead of each becoming its own near-empty section. Without this,
-        every TOC entry ("Attributes of the AI RMF 3", page number and
-        all) becomes a standalone one-line chunk that can outrank real
-        content on an exact-phrase query, since it IS that exact phrase.
+        section once it has real body content beyond the heading line
+        itself - a run of consecutive heading-like lines (a table of
+        contents, a stack of repeated running headers) keeps
+        accumulating into the same pending section instead of each
+        becoming its own near-empty section. Without this, every TOC
+        entry ("Attributes of the AI RMF 3", page number and all)
+        becomes a standalone one-sentence chunk that can outrank real
+        content on an exact-phrase query, since it IS that exact
+        phrase.
         """
         sections: list[tuple[str | None, list[str]]] = []
         current_title: str | None = None
@@ -156,15 +186,25 @@ class RecursiveChunker:
     ) -> bool:
         return any(not self._looks_like_heading(line) for line in lines)
 
-    def _split_text(
+    def _build_windows(
         self,
         text: str
     ) -> list[str]:
+        """
+        The old chunk-level unit, unchanged: greedy sentence-packing up
+        to chunk_size, with a trailing character-overlap carried into
+        the next window for continuity. No longer the retrievable unit
+        itself - each window's text is split into individual sentences
+        right after this returns (see chunk()), and only those
+        sentences are independently embedded/stored. A window survives
+        only as parent_chunk_id metadata for generation-time context
+        expansion.
+        """
         if len(text) <= self.chunk_size:
             return [text]
 
         sentences = self._split_sentences(text)
-        chunks: list[str] = []
+        windows: list[str] = []
         current = ""
 
         for sentence in sentences:
@@ -175,16 +215,16 @@ class RecursiveChunker:
                 continue
 
             if current:
-                chunks.append(current)
+                windows.append(current)
                 current = self._with_overlap(current, sentence)
             else:
-                chunks.extend(self._split_long_sentence(sentence))
+                windows.extend(self._split_long_sentence(sentence))
                 current = ""
 
         if current:
-            chunks.append(current)
+            windows.append(current)
 
-        return self._merge_tiny_chunks(chunks)
+        return self._merge_tiny_chunks(windows)
 
     def _split_sentences(
         self,
@@ -236,6 +276,31 @@ class RecursiveChunker:
                 merged[-1] = f"{merged[-1]} {chunk}".strip()
             else:
                 merged.append(chunk)
+
+        return merged
+
+    def _merge_tiny_sentences(
+        self,
+        sentences: list[str]
+    ) -> list[str]:
+        """
+        Same spirit as _merge_tiny_chunks, at sentence granularity - a
+        sentence under minimum_sentence_size ("See Section 4.2.") gets
+        folded into the previous sentence rather than becoming its own
+        standalone embedded unit. The first sentence in a window always
+        stays standalone even if tiny (nothing earlier to merge into
+        yet), matching _merge_tiny_chunks' existing behavior exactly.
+        """
+        if len(sentences) <= 1:
+            return sentences
+
+        merged: list[str] = []
+
+        for sentence in sentences:
+            if merged and len(sentence) < self.minimum_sentence_size:
+                merged[-1] = f"{merged[-1]} {sentence}".strip()
+            else:
+                merged.append(sentence)
 
         return merged
 

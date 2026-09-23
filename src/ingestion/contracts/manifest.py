@@ -21,6 +21,13 @@ class ChunkManifestEntry(BaseModel):
     chunk_version: int = 1
     status: ChunkStatus = ChunkStatus.PENDING
     error: str | None = None
+    # Human-readable word-level summary of what changed vs. the previous
+    # version of this exact chunk_id (e.g. "changed 'must' to 'may'") -
+    # audit/debugging only, computed after the re-embed decision is
+    # already made. Never read by IncrementalIndexer's own diff logic
+    # (that's content_hash equality, unaffected by this field existing
+    # at all) - see compute_word_diff() in incremental_indexer.py.
+    word_diff: str | None = None
 
 
 class PageManifestEntry(BaseModel):

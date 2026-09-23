@@ -1,3 +1,4 @@
+import dataclasses
 import time
 import uuid
 from collections.abc import Sequence
@@ -14,6 +15,7 @@ from ingestion.incremental_indexer import IncrementalIndexer
 from ingestion.ingestion_pipeline import IngestionPipeline
 from ingestion.manifest_store import ManifestStore
 from mlops.feature_flags import FeatureFlagManager
+from rag.chunking.chunk import Chunk
 from rag.chunking.recursive_chunker import RecursiveChunker
 from rag.embeddings.base import Embedder
 from rag.embeddings.hashing_embedder import HashingEmbedder
@@ -317,7 +319,7 @@ class RAGService:
         )
         answer = self.answerer.answer(
             query=query,
-            retrieved_chunks=retrieved,
+            retrieved_chunks=self._expand_to_window(retrieved),
             history=history
         )
 
@@ -421,7 +423,7 @@ class RAGService:
         generation_started = time.monotonic()
         answer = self.answerer.answer(
             query=query,
-            retrieved_chunks=retrieved,
+            retrieved_chunks=self._expand_to_window(retrieved),
             history=history
         )
         trace.stage_timings_ms["generation"] = (time.monotonic() - generation_started) * 1000
@@ -581,6 +583,66 @@ class RAGService:
             candidates=authorized,
             top_k=top_k
         )
+
+    def _expand_to_window(
+        self,
+        retrieved: list[RetrievedChunk]
+    ) -> list[RetrievedChunk]:
+        """
+        Expands each sentence-level match to its parent window (the
+        sentence-packed group RecursiveChunker split it from) before
+        generation sees it - a lone sentence often can't carry enough
+        context on its own for the LLM to answer well, even though it's
+        exactly the right unit for precise retrieval/citation. Only
+        used for what gets handed to the Answerer; sources/citations/
+        guardrail scoring still reference the original, precise
+        sentence-level chunks (see ask()/ask_with_trace()) - a source
+        should point at the sentence that actually matched, not the
+        whole paragraph around it.
+
+        A chunk with no parent_chunk_id (pre-sentence-granularity data
+        still in the index, or a store that returns nothing for the
+        lookup) passes through unchanged rather than erroring.
+        """
+        expanded: list[RetrievedChunk] = []
+
+        for item in retrieved:
+            parent_chunk_id = item.chunk.parent_chunk_id
+
+            if parent_chunk_id is None:
+                expanded.append(item)
+                continue
+
+            try:
+                siblings = self.vector_store.get_by_parent_chunk_id(parent_chunk_id)
+            except Exception:
+                siblings = []
+
+            if not siblings:
+                expanded.append(item)
+                continue
+
+            window_text = " ".join(
+                sibling.text
+                for sibling in sorted(siblings, key=self._sentence_index_of)
+            )
+            expanded.append(
+                dataclasses.replace(item, chunk=item.chunk.model_copy(update={"text": window_text}))
+            )
+
+        return expanded
+
+    def _sentence_index_of(
+        self,
+        chunk: Chunk
+    ) -> int:
+        # chunk_id is "{document_id}:p{page}:s{sentence_index}" -
+        # extracting the trailing integer reconstructs each window's
+        # original sentence order without needing a separate index.
+        try:
+            return int(chunk.chunk_id.rsplit(":", 1)[-1].removeprefix("s"))
+        except ValueError:
+            return 0
 
     def _filter_by_access(
         self,

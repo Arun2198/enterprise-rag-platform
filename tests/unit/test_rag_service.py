@@ -75,13 +75,13 @@ def test_ingest_stamps_embedding_lineage_onto_indexed_chunks(tmp_path):
 
     service.ingest([str(file_path)], document_ids=["leave_policy"])
 
-    stored_chunk = service.vector_store.get("leave_policy:p1:c0")
+    stored_chunk = service.vector_store.get("leave_policy:p1:s0")
     assert stored_chunk.embedding_provider == "hashing"
     assert stored_chunk.embedding_model == "hashing-384"
     assert stored_chunk.embedding_version == "384"
     assert stored_chunk.indexed_at is not None
     assert stored_chunk.content_hash is not None
-    assert stored_chunk.chunking_version == "recursive:900:50:10"
+    assert stored_chunk.chunking_version == "sentence:900:50:10:20"
 
 
 def test_rag_service_ingests_and_answers_from_markdown(tmp_path):
@@ -768,7 +768,7 @@ def test_ingest_document_ids_override_the_filename_derived_identity(tmp_path):
 
     service.ingest([str(file_path)], document_ids=["stable-id-123"])
 
-    assert service.vector_store.get("stable-id-123:p1:c0") is not None
+    assert service.vector_store.get("stable-id-123:p1:s0") is not None
 
 
 def test_ingest_document_ids_length_mismatch_is_reported_as_an_error(tmp_path):
@@ -832,7 +832,7 @@ def test_reindex_document_accepts_an_explicit_document_id(tmp_path):
     result = service.reindex_document(str(file_path), document_id="stable-id-123")
 
     assert result.indexed_documents == 1
-    assert service.vector_store.get("stable-id-123:p1:c0") is not None
+    assert service.vector_store.get("stable-id-123:p1:s0") is not None
 
 
 def test_ask_with_trace_returns_matching_ask_response(tmp_path):
@@ -1053,3 +1053,83 @@ def test_ask_returns_no_citations_for_extractive_answers(tmp_path):
 
     assert response.citations == []
     assert "has_invalid_citations" not in response.guardrail_flags
+
+
+def _sentence_chunk(chunk_id, text, parent_chunk_id=None):
+    return Chunk(
+        chunk_id=chunk_id, document_id="doc", chunk_index=0, text=text,
+        source="doc.md", document_type="markdown", parent_chunk_id=parent_chunk_id
+    )
+
+
+def test_expand_to_window_returns_concatenated_sibling_sentences_in_order():
+    """
+    Retrieval-time context expansion: a sentence-level match gets
+    expanded to its whole parent window (all sibling sentences that
+    share its parent_chunk_id) before generation sees it, reconstructed
+    in original sentence order - not the vector store's insertion
+    order, which this test deliberately scrambles.
+    """
+    service = RAGService()
+    window_id = "doc:p1:w0"
+    first = _sentence_chunk("doc:p1:s0", "First sentence.", parent_chunk_id=window_id)
+    second = _sentence_chunk("doc:p1:s1", "Second sentence.", parent_chunk_id=window_id)
+    third = _sentence_chunk("doc:p1:s2", "Third sentence.", parent_chunk_id=window_id)
+    unrelated = _sentence_chunk("doc:p2:s0", "Unrelated sentence from a different window.", parent_chunk_id="doc:p2:w0")
+
+    # Added out of order - expansion must still reconstruct reading order.
+    for chunk in (third, first, unrelated, second):
+        service.vector_store.add(chunk, service.embedder.embed(chunk.text))
+
+    matched = RetrievedChunk(chunk=second, vector_score=0.9, keyword_score=0.9, score=0.9, rank=1)
+
+    expanded = service._expand_to_window([matched])
+
+    assert len(expanded) == 1
+    assert expanded[0].chunk.text == "First sentence. Second sentence. Third sentence."
+    assert "Unrelated" not in expanded[0].chunk.text
+    # the matched chunk's own identity/score/rank pass through untouched -
+    # only .text changes
+    assert expanded[0].chunk.chunk_id == "doc:p1:s1"
+    assert expanded[0].score == 0.9
+    assert expanded[0].rank == 1
+
+
+def test_expand_to_window_leaves_chunks_with_no_parent_chunk_id_unchanged():
+    service = RAGService()
+    legacy_chunk = _sentence_chunk("doc:0", "A chunk from before sentence-level splitting existed.")
+    item = RetrievedChunk(chunk=legacy_chunk, vector_score=0.5, keyword_score=0.5, score=0.5, rank=1)
+
+    expanded = service._expand_to_window([item])
+
+    assert expanded == [item]
+
+
+def test_ask_generation_receives_the_expanded_window_but_sources_stay_precise(tmp_path):
+    """
+    Sources/citations shown to the caller should still point at the
+    exact matched sentence, not the whole expanded window - only what
+    the Answerer sees for generation gets expanded.
+    """
+    captured = {}
+
+    class RecordingAnswerer:
+        def answer(self, query, retrieved_chunks, history=None):
+            captured["chunks"] = retrieved_chunks
+            return "recorded answer"
+
+    file_path = tmp_path / "policy.md"
+    file_path.write_text(
+        "Alpha sentence about something else entirely. "
+        "Contractors receive 10 days of leave per year. "
+        "Charlie sentence about something else entirely.",
+        encoding="utf-8"
+    )
+    service = RAGService(answerer=RecordingAnswerer(), hallucination_guard_enabled=False)
+    service.ingest([str(file_path)], document_ids=["policy"])
+
+    response = service.ask("How many leave days do contractors receive?", top_k=1)
+
+    assert "Alpha sentence" in captured["chunks"][0].chunk.text  # generator saw the expanded window
+    assert "Contractors receive 10 days" in captured["chunks"][0].chunk.text
+    assert response.sources[0].text == "Contractors receive 10 days of leave per year."  # source stays precise

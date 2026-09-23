@@ -1,6 +1,6 @@
 {
   "name": "ai-rmf-1stdraft",
-  "description": "Grounded in sample_documents/AI-RMF-1stdraft.pdf (NIST AI Risk Management Framework, Initial Draft, March 2022). relevant_chunk_ids use the default RecursiveChunker() settings against that document (document_id=AI-RMF-1stdraft), chunked per-page under the page-aware chunk_id scheme (document_id:p{page}:c{index}) introduced by the incremental re-embedding feature - re-chunking with different parameters, or reverting to flat (non-page-aware) chunking, invalidates these ids.",
+  "description": "Grounded in sample_documents/AI-RMF-1stdraft.pdf (NIST AI Risk Management Framework, Initial Draft, March 2022). relevant_chunk_ids use the default RecursiveChunker() settings against that document (document_id=AI-RMF-1stdraft), chunked at sentence granularity under the sentence-level chunk_id scheme (document_id:p{page}:s{sentence_index}) - each id is one sentence, not a ~900-char packed group. Re-chunking with different parameters, or reverting to window/chunk-level granularity, invalidates these ids.",
   "source_documents": [
     "sample_documents/AI-RMF-1stdraft.pdf"
   ],
@@ -9,7 +9,7 @@
       "id": "Q001",
       "query": "When was this initial draft of the AI RMF released?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p1:c1"
+        "AI-RMF-1stdraft:p1:s1"
       ],
       "category": "framework-overview",
       "difficulty": "easy"
@@ -18,7 +18,7 @@
       "id": "Q002",
       "query": "What principles does the AI RMF strive to follow?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p4:c2"
+        "AI-RMF-1stdraft:p4:s6"
       ],
       "category": "framework-overview",
       "difficulty": "medium"
@@ -27,7 +27,7 @@
       "id": "Q003",
       "query": "What are the four stakeholder groups identified as intended audiences of the AI RMF?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p7:c0"
+        "AI-RMF-1stdraft:p7:s1"
       ],
       "category": "stakeholders",
       "difficulty": "medium"
@@ -36,7 +36,8 @@
       "id": "Q004",
       "query": "What are AI risk thresholds?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p9:c3"
+        "AI-RMF-1stdraft:p9:s13",
+        "AI-RMF-1stdraft:p9:s14"
       ],
       "category": "risk-management",
       "difficulty": "medium"
@@ -45,7 +46,7 @@
       "id": "Q005",
       "query": "Is the AI RMF a checklist or compliance mechanism?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p4:c6"
+        "AI-RMF-1stdraft:p4:s14"
       ],
       "category": "risk-management",
       "difficulty": "hard"
@@ -54,7 +55,7 @@
       "id": "Q006",
       "query": "What does reliability mean for an AI model?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p12:c3"
+        "AI-RMF-1stdraft:p12:s9"
       ],
       "category": "trustworthiness",
       "difficulty": "medium"
@@ -63,7 +64,7 @@
       "id": "Q007",
       "query": "Which socio-technical characteristics have implications for addressing AI risk?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p13:c5"
+        "AI-RMF-1stdraft:p13:s18"
       ],
       "category": "trustworthiness",
       "difficulty": "easy"
@@ -72,7 +73,7 @@
       "id": "Q008",
       "query": "What does explainability seek to provide in AI systems?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p14:c1"
+        "AI-RMF-1stdraft:p14:s1"
       ],
       "category": "trustworthiness",
       "difficulty": "medium"
@@ -81,8 +82,8 @@
       "id": "Q009",
       "query": "What is the difference between explainability and interpretability?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p14:c3",
-        "AI-RMF-1stdraft:p14:c4"
+        "AI-RMF-1stdraft:p14:s14",
+        "AI-RMF-1stdraft:p14:s16"
       ],
       "category": "trustworthiness",
       "difficulty": "hard"
@@ -91,7 +92,7 @@
       "id": "Q010",
       "query": "What does privacy refer to in the AI RMF taxonomy?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p14:c5"
+        "AI-RMF-1stdraft:p14:s23"
       ],
       "category": "trustworthiness",
       "difficulty": "medium"
@@ -100,7 +101,7 @@
       "id": "Q011",
       "query": "What are the three major categories of bias identified by NIST?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p15:c2"
+        "AI-RMF-1stdraft:p15:s5"
       ],
       "category": "bias-fairness",
       "difficulty": "easy"
@@ -109,7 +110,7 @@
       "id": "Q012",
       "query": "What guiding principles are relevant for AI risk?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p15:c5"
+        "AI-RMF-1stdraft:p15:s21"
       ],
       "category": "trustworthiness",
       "difficulty": "medium"
@@ -118,7 +119,7 @@
       "id": "Q013",
       "query": "How does the AI RMF define accountability?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p16:c2"
+        "AI-RMF-1stdraft:p16:s9"
       ],
       "category": "governance",
       "difficulty": "medium"
@@ -127,7 +128,7 @@
       "id": "Q014",
       "query": "What does transparency seek to remedy?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p16:c3"
+        "AI-RMF-1stdraft:p16:s13"
       ],
       "category": "trustworthiness",
       "difficulty": "medium"
@@ -136,7 +137,7 @@
       "id": "Q015",
       "query": "What does the Map function do?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p18:c1"
+        "AI-RMF-1stdraft:p18:s7"
       ],
       "category": "core-functions",
       "difficulty": "easy"
@@ -145,7 +146,7 @@
       "id": "Q016",
       "query": "What does the Measure function do?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p19:c13"
+        "AI-RMF-1stdraft:p19:s19"
       ],
       "category": "core-functions",
       "difficulty": "easy"
@@ -154,7 +155,7 @@
       "id": "Q017",
       "query": "What does the Manage function do?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p20:c7"
+        "AI-RMF-1stdraft:p20:s11"
       ],
       "category": "core-functions",
       "difficulty": "easy"
@@ -163,7 +164,7 @@
       "id": "Q018",
       "query": "What does the Govern function do?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p21:c8"
+        "AI-RMF-1stdraft:p21:s9"
       ],
       "category": "core-functions",
       "difficulty": "easy"
@@ -172,10 +173,10 @@
       "id": "Q019",
       "query": "What are the four core functions of the AI RMF?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p18:c1",
-        "AI-RMF-1stdraft:p19:c13",
-        "AI-RMF-1stdraft:p20:c7",
-        "AI-RMF-1stdraft:p21:c8"
+        "AI-RMF-1stdraft:p18:s7",
+        "AI-RMF-1stdraft:p19:s19",
+        "AI-RMF-1stdraft:p20:s11",
+        "AI-RMF-1stdraft:p21:s9"
       ],
       "category": "core-functions",
       "difficulty": "hard"
@@ -184,7 +185,7 @@
       "id": "Q020",
       "query": "What is the goal of the AI RMF?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p23:c3"
+        "AI-RMF-1stdraft:p23:s8"
       ],
       "category": "framework-overview",
       "difficulty": "medium"
@@ -193,7 +194,7 @@
       "id": "Q021",
       "query": "On what date was this preliminary version of the AI Risk Management Framework first published?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p1:c1"
+        "AI-RMF-1stdraft:p1:s1"
       ],
       "category": "semantic-paraphrase",
       "difficulty": "easy"
@@ -202,7 +203,7 @@
       "id": "Q022",
       "query": "Which four communities does NIST regard as the target audience for the AI RMF?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p7:c0"
+        "AI-RMF-1stdraft:p7:s1"
       ],
       "category": "semantic-paraphrase",
       "difficulty": "medium"
@@ -211,7 +212,7 @@
       "id": "Q023",
       "query": "How many socio-technical characteristics are listed as having implications for addressing AI risk?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p13:c5"
+        "AI-RMF-1stdraft:p13:s18"
       ],
       "category": "numeric",
       "difficulty": "medium"
@@ -220,7 +221,8 @@
       "id": "Q024",
       "query": "How do socio-technical characteristics of AI systems differ from technical characteristics when it comes to measurement?",
       "relevant_chunk_ids": [
-        "AI-RMF-1stdraft:p13:c4"
+        "AI-RMF-1stdraft:p13:s14",
+        "AI-RMF-1stdraft:p13:s15"
       ],
       "category": "comparison",
       "difficulty": "hard"

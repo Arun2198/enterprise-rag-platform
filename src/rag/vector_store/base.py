@@ -41,6 +41,18 @@ class VectorStore(Protocol):
     ) -> list[float] | None:
         ...
 
+    def get(
+        self,
+        chunk_id: str
+    ) -> Chunk | None:
+        ...
+
+    def get_by_parent_chunk_id(
+        self,
+        parent_chunk_id: str
+    ) -> list[Chunk]:
+        ...
+
     def delete(
         self,
         chunk_id: str

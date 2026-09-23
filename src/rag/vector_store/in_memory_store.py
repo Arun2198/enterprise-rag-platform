@@ -100,6 +100,16 @@ class InMemoryVectorStore:
         record = self._records.get(chunk_id)
         return record[1] if record else None
 
+    def get_by_parent_chunk_id(
+        self,
+        parent_chunk_id: str
+    ) -> list[Chunk]:
+        return [
+            chunk
+            for chunk, _ in self._records.values()
+            if chunk.parent_chunk_id == parent_chunk_id
+        ]
+
     def delete(
         self,
         chunk_id: str

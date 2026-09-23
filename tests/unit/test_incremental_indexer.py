@@ -1,3 +1,5 @@
+import hashlib
+
 from ingestion.contracts.document import Document
 from ingestion.contracts.manifest import ChunkStatus
 from ingestion.incremental_indexer import IncrementalIndexer
@@ -438,3 +440,107 @@ def test_chunk_label_carries_file_name_version_and_date():
     assert f"v{stored.document_version}.{stored.chunk_version}" in stored.chunk_label
     assert chunk_id in stored.chunk_label
     assert stored.indexed_at.date().isoformat() in stored.chunk_label
+
+
+# Sentence-level granularity: verify the diff logic (unchanged/reused/
+# changed classification, content-addressed reuse) still behaves
+# correctly now that the retrievable unit is a single sentence, not a
+# ~900-char window - a length-preserving edit inside one sentence must
+# not touch any other sentence, on that page or any other.
+def test_editing_one_word_in_one_sentence_reembeds_only_that_sentence():
+    indexer, embedder, vector_store, manifest_store = _build_indexer()
+    doc = Document(
+        document_id="doc-m",
+        source="doc-m.pdf",
+        document_type="pdf",
+        content="ignored",
+        pages=[
+            "Page One Heading\n"
+            "Alpha sentence stays the same. Bravo sentence stays the same. "
+            "Charlie sentence stays the same.",
+            "Page Two Heading\n"
+            "Delta sentence stays the same. Echo sentence stays the same.",
+        ],
+        metadata={}
+    )
+    indexer.index(doc)
+    embedder.embedded_texts.clear()
+
+    edited = doc.model_copy(update={
+        "pages": [
+            "Page One Heading\n"
+            "Alpha sentence stays the same. Bravo sentence has changed now. "
+            "Charlie sentence stays the same.",
+            "Page Two Heading\n"
+            "Delta sentence stays the same. Echo sentence stays the same.",
+        ]
+    })
+    result = indexer.index(edited)
+
+    assert result.total_chunks == 5  # 3 sentences page 1 + 2 sentences page 2
+    assert result.changed_chunks == 1
+    assert result.unchanged_chunks == 4  # every other sentence, on both pages
+    assert result.reused_chunks == 0  # no position shift - edit didn't change sentence count
+    assert embedder.call_count == 1
+    assert embedder.embedded_texts == ["Bravo sentence has changed now."]
+
+    manifest = manifest_store.get("doc-m")
+    edited_entry = manifest.chunks["doc-m:p1:s1"]
+    assert edited_entry.chunk_version == 2
+    untouched_entries = [
+        manifest.chunks["doc-m:p1:s0"],
+        manifest.chunks["doc-m:p1:s2"],
+        manifest.chunks["doc-m:p2:s0"],
+        manifest.chunks["doc-m:p2:s1"],
+    ]
+    assert all(entry.chunk_version == 1 for entry in untouched_entries)
+
+
+def test_word_diff_identifies_a_one_word_change_and_sentence_is_reembedded_as_whole_unit():
+    """
+    The word-level diff is audit-only: it must correctly summarize a
+    one-word change, but re-embedding still happens at whole-sentence
+    granularity - the sentence isn't split into smaller pieces because
+    only one word inside it changed.
+    """
+    indexer, embedder, vector_store, manifest_store = _build_indexer()
+    doc = Document(
+        document_id="doc-n",
+        source="doc-n.pdf",
+        document_type="pdf",
+        content="ignored",
+        pages=[
+            "Page Heading\n"
+            "Alpha sentence stays the same. Contractors receive 10 days of leave. "
+            "Charlie sentence stays the same."
+        ],
+        metadata={}
+    )
+    indexer.index(doc)
+    embedder.embedded_texts.clear()
+
+    edited = doc.model_copy(update={
+        "pages": [
+            "Page Heading\n"
+            "Alpha sentence stays the same. Contractors receive 15 days of leave. "
+            "Charlie sentence stays the same."
+        ]
+    })
+    result = indexer.index(edited)
+
+    assert result.changed_chunks == 1
+    assert embedder.call_count == 1
+    # re-embedded as one whole sentence, not split into smaller pieces
+    assert embedder.embedded_texts == ["Contractors receive 15 days of leave."]
+
+    manifest = manifest_store.get("doc-n")
+    changed_entry = manifest.chunks["doc-n:p1:s1"]
+    assert changed_entry.content_hash == hashlib.sha256(
+        "Contractors receive 15 days of leave.".encode("utf-8")
+    ).hexdigest()
+    assert changed_entry.word_diff == "changed '10' to '15'"
+
+    # unrelated sentences carry no word_diff at all - the diff is scoped
+    # to the chunk that actually changed
+    assert manifest.chunks["doc-n:p1:s0"].word_diff is None
+    assert manifest.chunks["doc-n:p1:s2"].word_diff is None

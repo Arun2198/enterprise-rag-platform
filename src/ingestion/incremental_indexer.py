@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
 from datetime import timezone
+from difflib import SequenceMatcher
 
 from ingestion.contracts.document import Document
 from ingestion.contracts.manifest import ChunkManifestEntry
@@ -78,6 +79,37 @@ def compute_document_hash(pages: list[str]) -> str:
 def embedding_fingerprint_for(embedder: Embedder) -> str:
     model_name = getattr(embedder, "model_name", embedder.provider_name)
     return f"{embedder.provider_name}:{model_name}:{embedder.dimensions}"
+
+
+def compute_word_diff(old_text: str, new_text: str) -> str:
+    """
+    Human-readable, word-level summary of what changed between two
+    versions of the same sentence - audit visibility only. Never used
+    for the re-embed decision (that's content_hash equality, already
+    decided by the time this runs) and never affects which sentence
+    gets embedded or how - this only describes a change that was
+    already going to be re-embedded as a whole unit regardless.
+    """
+    old_words = old_text.split()
+    new_words = new_text.split()
+    matcher = SequenceMatcher(None, old_words, new_words)
+    changes = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+
+        old_segment = " ".join(old_words[i1:i2])
+        new_segment = " ".join(new_words[j1:j2])
+
+        if tag == "replace":
+            changes.append(f"changed '{old_segment}' to '{new_segment}'")
+        elif tag == "delete":
+            changes.append(f"removed '{old_segment}'")
+        elif tag == "insert":
+            changes.append(f"added '{new_segment}'")
+
+    return "; ".join(changes) if changes else "no word-level change detected"
 
 
 class IncrementalIndexer:
@@ -217,6 +249,29 @@ class IncrementalIndexer:
 
         stale_chunk_ids = set(previous_chunks.keys()) - new_chunk_ids
 
+        # Audit-only word diff for genuinely-changed chunks (existed
+        # before at this exact chunk_id, hash differs now) - fetched
+        # before any writes touch these ids, since a chunk's old text
+        # is only readable from the vector store up until it's
+        # overwritten. Purely descriptive: doesn't feed back into
+        # to_embed/to_reuse/chunk_version_by_id, which are already
+        # fully decided above.
+        word_diff_by_id: dict[str, str] = {}
+        for chunk in to_embed:
+            old_entry = previous_chunks.get(chunk.chunk_id)
+            if old_entry is None:
+                continue
+            try:
+                old_chunk = self.vector_store.get(chunk.chunk_id)
+            except Exception as ex:
+                logger.warning(
+                    "incremental_ingest_word_diff_fetch_failed",
+                    extra={"document_id": document.document_id, "chunk_id": chunk.chunk_id, "error": str(ex)}
+                )
+                continue
+            if old_chunk is not None:
+                word_diff_by_id[chunk.chunk_id] = compute_word_diff(old_chunk.text, chunk.text)
+
         # Page-level stats are informational (Phase 16's log shape asks
         # for them explicitly) - computed independently of the embed
         # decision above, which is chunk-hash-driven.
@@ -336,6 +391,7 @@ class IncrementalIndexer:
             status_by_chunk_id=status_by_chunk_id,
             error_by_chunk_id=error_by_chunk_id,
             chunk_version_by_id=chunk_version_by_id,
+            word_diff_by_id=word_diff_by_id,
             document_hash=document_hash,
             fingerprint=fingerprint,
             chunking_version=chunking_version,
@@ -417,10 +473,14 @@ class IncrementalIndexer:
         self,
         chunk_id: str
     ) -> int:
-        # chunk_id shape is "{document_id}:p{page}:c{index}" - the
+        # chunk_id shape is "{document_id}:p{page}:s{sentence_index}"
+        # (was "...c{index}" before sentence-level chunking - the
+        # middle segment's meaning is unchanged either way) - the
         # page-scoping for reuse only needs the page segment, not a full
         # parse of the id, and falls back to 1 for any id predating this
-        # scheme (defensive, not expected in practice).
+        # scheme (defensive, not expected in practice). Always exactly
+        # 3 segments - never add a 4th (e.g. a nested chunk index under
+        # a sentence), that breaks this rsplit(":", 2) parse silently.
         try:
             page_segment = chunk_id.rsplit(":", 2)[-2]
             return int(page_segment.removeprefix("p"))
@@ -449,6 +509,7 @@ class IncrementalIndexer:
         status_by_chunk_id: dict[str, ChunkStatus],
         error_by_chunk_id: dict[str, str],
         chunk_version_by_id: dict[str, int],
+        word_diff_by_id: dict[str, str],
         document_hash: str,
         fingerprint: str,
         chunking_version: str,
@@ -468,12 +529,25 @@ class IncrementalIndexer:
             else:
                 status = ChunkStatus.PENDING
 
+            word_diff: str | None
+
+            if chunk.chunk_id in word_diff_by_id:
+                word_diff = word_diff_by_id[chunk.chunk_id]
+            elif chunk.chunk_id in previous_chunks:
+                # Unchanged/reused - carry the last real diff forward
+                # rather than blanking it out, same lineage spirit as
+                # chunk_version.
+                word_diff = previous_chunks[chunk.chunk_id].word_diff
+            else:
+                word_diff = None
+
             chunk_entries[chunk.chunk_id] = ChunkManifestEntry(
                 chunk_id=chunk.chunk_id,
                 content_hash=chunk.content_hash or "",
                 chunk_version=chunk_version_by_id.get(chunk.chunk_id, 1),
                 status=status,
-                error=error_by_chunk_id.get(chunk.chunk_id)
+                error=error_by_chunk_id.get(chunk.chunk_id),
+                word_diff=word_diff
             )
 
         page_entries = [

@@ -27,6 +27,7 @@ def build_knn_index_mapping(dimensions: int) -> dict[str, Any]:
                 "document_type": {"type": "keyword"},
                 "owner": {"type": "keyword"},
                 "parent_section": {"type": "text"},
+                "parent_chunk_id": {"type": "keyword"},
                 "content_hash": {"type": "keyword"},
                 "chunking_version": {"type": "keyword"},
                 "embedding_provider": {"type": "keyword"},
@@ -214,6 +215,40 @@ class OpenSearchVectorStore:
 
         return response.get("_source", {}).get("embedding")
 
+    def get(
+        self,
+        chunk_id: str
+    ) -> Chunk | None:
+        """
+        Fetches a previously stored chunk (full record, not just its
+        embedding) - used by IncrementalIndexer to read a changed
+        sentence's old text for the audit-only word diff, and by window
+        expansion's sibling lookup.
+        """
+        response = self.client.get(index=self.index_name, id=chunk_id, ignore=[404])
+
+        if not response.get("found", False):
+            return None
+
+        return self._chunk_from_source(response.get("_source", {}))
+
+    def get_by_parent_chunk_id(
+        self,
+        parent_chunk_id: str
+    ) -> list[Chunk]:
+        """
+        All sentences belonging to one window, for context expansion at
+        generation time. A window's sentence count is small (it's what
+        chunk_size used to bound before sentence-level splitting), so a
+        flat size=100 term-query is a safe bound without needing scroll.
+        """
+        response = self.client.search(
+            index=self.index_name,
+            body={"size": 100, "query": {"term": {"parent_chunk_id": parent_chunk_id}}}
+        )
+        hits = response.get("hits", {}).get("hits", [])
+        return [self._chunk_from_source(hit.get("_source", {})) for hit in hits]
+
     def delete(
         self,
         chunk_id: str
@@ -314,6 +349,7 @@ class OpenSearchVectorStore:
             "document_type": chunk.document_type,
             "owner": chunk.owner,
             "parent_section": chunk.parent_section,
+            "parent_chunk_id": chunk.parent_chunk_id,
             "content_hash": chunk.content_hash,
             "chunking_version": chunk.chunking_version,
             "embedding_provider": chunk.embedding_provider,
@@ -396,6 +432,7 @@ class OpenSearchVectorStore:
             document_type=source["document_type"],
             owner=source.get("owner"),
             parent_section=source.get("parent_section"),
+            parent_chunk_id=source.get("parent_chunk_id"),
             content_hash=source.get("content_hash"),
             chunking_version=source.get("chunking_version"),
             embedding_provider=source.get("embedding_provider"),
