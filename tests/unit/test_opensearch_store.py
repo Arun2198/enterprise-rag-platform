@@ -65,6 +65,18 @@ class FakeOpenSearchClient:
 
     def search(self, index, body):
         self.search_calls.append({"index": index, "body": body})
+
+        # get_by_parent_chunk_id's real term query - filter the actually
+        # stored documents instead of returning the fixed fake hit below,
+        # so tests can assert on real sibling-lookup behavior.
+        parent_chunk_id = body.get("query", {}).get("term", {}).get("parent_chunk_id")
+        if parent_chunk_id is not None:
+            matches = [
+                doc for doc in self.stored_documents.values()
+                if doc.get("parent_chunk_id") == parent_chunk_id
+            ]
+            return {"hits": {"hits": [{"_score": 1.0, "_source": doc} for doc in matches]}}
+
         return {
             "hits": {
                 "hits": [
@@ -300,3 +312,55 @@ def test_get_embedding_returns_none_for_an_unknown_chunk_id():
     store = OpenSearchVectorStore(client=client, index_name="chunks")
 
     assert store.get_embedding("never-indexed") is None
+
+
+def test_get_round_trips_page_number_chunk_version_chunk_label_and_parent_chunk_id():
+    """
+    These four fields were added to Chunk across incremental re-embedding
+    and sentence-level chunking, but _document_body/_chunk_from_source
+    weren't updated at the same time - a real gap where a chunk fetched
+    back from OpenSearch silently lost them (always None/default),
+    even though InMemoryVectorStore never had this problem.
+    """
+    client = FakeOpenSearchClient()
+    store = OpenSearchVectorStore(client=client, index_name="chunks")
+    chunk = Chunk(
+        chunk_id="doc:p3:s2",
+        document_id="doc",
+        chunk_index=7,
+        page_number=3,
+        text="hello",
+        source="doc.md",
+        document_type="markdown",
+        chunk_version=2,
+        chunk_label="doc.md:v1.2:doc:p3:s2:2026-01-01",
+        parent_chunk_id="doc:p3:w1",
+    )
+
+    store.add(chunk, [0.1, 0.2, 0.3])
+    fetched = store.get("doc:p3:s2")
+
+    assert fetched.page_number == 3
+    assert fetched.chunk_version == 2
+    assert fetched.chunk_label == "doc.md:v1.2:doc:p3:s2:2026-01-01"
+    assert fetched.parent_chunk_id == "doc:p3:w1"
+
+
+def test_get_by_parent_chunk_id_returns_matching_siblings():
+
+    client = FakeOpenSearchClient()
+    store = OpenSearchVectorStore(client=client, index_name="chunks")
+    first = Chunk(
+        chunk_id="doc:p1:s0", document_id="doc", chunk_index=0, text="First.",
+        source="doc.md", document_type="markdown", parent_chunk_id="doc:p1:w0"
+    )
+    second = Chunk(
+        chunk_id="doc:p1:s1", document_id="doc", chunk_index=1, text="Second.",
+        source="doc.md", document_type="markdown", parent_chunk_id="doc:p1:w0"
+    )
+    store.add(first, [0.1, 0.2])
+    store.add(second, [0.3, 0.4])
+
+    siblings = store.get_by_parent_chunk_id("doc:p1:w0")
+
+    assert {s.chunk_id for s in siblings} == {"doc:p1:s0", "doc:p1:s1"}
